@@ -27,6 +27,8 @@ pub struct ServerSentEventHandler<E: EthSpec> {
     attester_slashing_tx: Sender<EventKind<E>>,
     bls_to_execution_change_tx: Sender<EventKind<E>>,
     block_gossip_tx: Sender<EventKind<E>>,
+    /// Channel for all events - receives every event type
+    all_events_tx: Sender<EventKind<E>>,
 }
 
 impl<E: EthSpec> ServerSentEventHandler<E> {
@@ -55,6 +57,7 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
         let (attester_slashing_tx, _) = broadcast::channel(capacity);
         let (bls_to_execution_change_tx, _) = broadcast::channel(capacity);
         let (block_gossip_tx, _) = broadcast::channel(capacity);
+        let (all_events_tx, _) = broadcast::channel(capacity);
 
         Self {
             attestation_tx,
@@ -77,6 +80,7 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
             attester_slashing_tx,
             bls_to_execution_change_tx,
             block_gossip_tx,
+            all_events_tx,
         }
     }
 
@@ -88,6 +92,12 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
                 "Registering server-sent event"
             );
         };
+
+        // Also send to the "all events" channel
+        if let Err(SendError(event)) = self.all_events_tx.send(kind.clone()) {
+            trace!(?event, "No receivers registered to listen for all events");
+        }
+
         let result = match &kind {
             EventKind::Attestation(_) => self
                 .attestation_tx
@@ -253,6 +263,15 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
 
     pub fn subscribe_block_gossip(&self) -> Receiver<EventKind<E>> {
         self.block_gossip_tx.subscribe()
+    }
+
+    /// Subscribe to all events.
+    ///
+    /// This returns a receiver that receives every event type that is registered
+    /// with the event handler. This is useful for tests that need to monitor
+    /// all beacon chain activity.
+    pub fn subscribe_all(&self) -> Receiver<EventKind<E>> {
+        self.all_events_tx.subscribe()
     }
 
     pub fn has_attestation_subscribers(&self) -> bool {

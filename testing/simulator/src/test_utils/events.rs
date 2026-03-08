@@ -12,9 +12,9 @@ use tokio::sync::broadcast::Receiver;
 use tokio::time::{timeout, Duration};
 use types::{Epoch, EthSpec, Slot};
 
-/// Represents a subscription to a specific SSE event type.
+/// Represents a subscription to SSE events.
 ///
-/// This struct wraps a broadcast receiver for a specific event kind
+/// This struct wraps a broadcast receiver for all event kinds
 /// and provides ergonomic methods for waiting on events.
 pub struct EventSubscription<E: EthSpec> {
     receiver: Receiver<EventKind<E>>,
@@ -111,61 +111,6 @@ impl<E: EthSpec> EventSubscription<E> {
     }
 }
 
-/// Topic for SSE subscriptions.
-///
-/// Represents all 19 SSE event types supported by the beacon node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SseTopic {
-    Attestation,
-    SingleAttestation,
-    Block,
-    BlockFull,
-    BlobSidecar,
-    DataColumnSidecar,
-    FinalizedCheckpoint,
-    Head,
-    VoluntaryExit,
-    ChainReorg,
-    ContributionAndProof,
-    PayloadAttributes,
-    LateHead,
-    LightClientFinalityUpdate,
-    LightClientOptimisticUpdate,
-    BlockReward,
-    ProposerSlashing,
-    AttesterSlashing,
-    BlsToExecutionChange,
-    BlockGossip,
-}
-
-impl SseTopic {
-    /// Get the topic name as a string (for debugging/logging).
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SseTopic::Attestation => "attestation",
-            SseTopic::SingleAttestation => "single_attestation",
-            SseTopic::Block => "block",
-            SseTopic::BlockFull => "block_full",
-            SseTopic::BlobSidecar => "blob_sidecar",
-            SseTopic::DataColumnSidecar => "data_column_sidecar",
-            SseTopic::FinalizedCheckpoint => "finalized_checkpoint",
-            SseTopic::Head => "head",
-            SseTopic::VoluntaryExit => "voluntary_exit",
-            SseTopic::ChainReorg => "chain_reorg",
-            SseTopic::ContributionAndProof => "contribution_and_proof",
-            SseTopic::PayloadAttributes => "payload_attributes",
-            SseTopic::LateHead => "late_head",
-            SseTopic::LightClientFinalityUpdate => "light_client_finality_update",
-            SseTopic::LightClientOptimisticUpdate => "light_client_optimistic_update",
-            SseTopic::BlockReward => "block_reward",
-            SseTopic::ProposerSlashing => "proposer_slashing",
-            SseTopic::AttesterSlashing => "attester_slashing",
-            SseTopic::BlsToExecutionChange => "bls_to_execution_change",
-            SseTopic::BlockGossip => "block_gossip",
-        }
-    }
-}
-
 /// Internal cache entry for a subscription.
 struct SubscriptionEntry<E: EthSpec> {
     receiver: Receiver<EventKind<E>>,
@@ -173,11 +118,11 @@ struct SubscriptionEntry<E: EthSpec> {
 
 /// Cache for lazy SSE subscriptions.
 ///
-/// Manages subscriptions to different event topics, creating them on first use
-/// and caching them for reuse.
+/// Manages subscriptions to beacon node events, creating them on first use
+/// and caching them for reuse. Each node has a single subscription to ALL events.
 pub struct SubscriptionCache<E: EthSpec> {
-    /// Map from (node_index, topic) to subscription entry.
-    subscriptions: RwLock<HashMap<(usize, SseTopic), SubscriptionEntry<E>>>,
+    /// Map from node_index to subscription entry.
+    subscriptions: RwLock<HashMap<usize, SubscriptionEntry<E>>>,
     _phantom: PhantomData<E>,
 }
 
@@ -196,38 +141,32 @@ impl<E: EthSpec> SubscriptionCache<E> {
         }
     }
 
-    /// Get or create a subscription for a specific node and topic.
+    /// Get or create a subscription for a specific node.
     ///
     /// This is the core lazy subscription method. If a subscription doesn't exist,
     /// it will be created by calling the provided `subscribe_fn`.
-    pub fn subscribe_to_node<F>(
-        &self,
-        node_index: usize,
-        topic: SseTopic,
-        subscribe_fn: F,
-    ) -> EventSubscription<E>
+    /// The subscription receives ALL event types.
+    pub fn subscribe_to_node<F>(&self, node_index: usize, subscribe_fn: F) -> EventSubscription<E>
     where
-        F: FnOnce(SseTopic) -> Receiver<EventKind<E>>,
+        F: FnOnce() -> Receiver<EventKind<E>>,
     {
         let mut subscriptions = self.subscriptions.write();
 
-        // Check if we already have a subscription for this node/topic
-        if let Some(entry) = subscriptions.get(&(node_index, topic)) {
-            // Clone the receiver to create a new subscription
-            // Note: broadcast::Receiver doesn't implement Clone, so we need to resubscribe
-            // The handler keeps the sender, so we need to get a new receiver from it
+        // Check if we already have a subscription for this node
+        if subscriptions.get(&node_index).is_some() {
+            // We have a cached subscription, need to create a new receiver
             drop(subscriptions);
             // Re-subscribe via the provided function
-            let receiver = subscribe_fn(topic);
+            let receiver = subscribe_fn();
             return EventSubscription::new(receiver);
         }
 
         // Create new subscription
-        let receiver = subscribe_fn(topic);
+        let receiver = subscribe_fn();
         let entry = SubscriptionEntry {
             receiver: receiver.resubscribe(),
         };
-        subscriptions.insert((node_index, topic), entry);
+        subscriptions.insert(node_index, entry);
 
         EventSubscription::new(receiver)
     }
@@ -239,8 +178,168 @@ impl<E: EthSpec> SubscriptionCache<E> {
 
     /// Clear subscriptions for a specific node.
     pub fn clear_for_node(&self, node_index: usize) {
-        let mut subs = self.subscriptions.write();
-        subs.retain(|(idx, _), _| *idx != node_index);
+        self.subscriptions.write().remove(&node_index);
+    }
+
+    /// Wait for a head event matching a predicate.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `predicate` - Optional function that returns true when the desired head is received.
+    ///                 If None, waits for any head event.
+    /// * `timeout_duration` - Maximum time to wait
+    pub async fn wait_for_head<F>(
+        &self,
+        node_index: usize,
+        predicate: Option<F>,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<SseHead>
+    where
+        F: Fn(&SseHead) -> bool,
+    {
+        let mut subscription = self.subscribe_to_node(node_index, || {
+            // This will be called when needed - the actual subscribe function
+            // is passed from the fixture that has access to the handler
+            panic!("No event handler available - use TestNetworkFixture::wait_for_head instead")
+        });
+
+        let event = if let Some(pred) = predicate {
+            subscription
+                .wait_for_with_timeout(
+                    |event| matches!(event, EventKind::Head(head) if pred(head)),
+                    timeout_duration,
+                )
+                .await?
+        } else {
+            subscription
+                .wait_for_with_timeout(
+                    |event| matches!(event, EventKind::Head(_)),
+                    timeout_duration,
+                )
+                .await?
+        };
+
+        match event {
+            EventKind::Head(head) => Ok(head),
+            _ => unreachable!("Predicate ensures this is a Head event"),
+        }
+    }
+
+    /// Wait for a block event matching a predicate.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `predicate` - Optional function that returns true when the desired block is received.
+    ///                 If None, waits for any block event.
+    /// * `timeout_duration` - Maximum time to wait
+    pub async fn wait_for_block<F>(
+        &self,
+        node_index: usize,
+        predicate: Option<F>,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<SseBlock>
+    where
+        F: Fn(&SseBlock) -> bool,
+    {
+        let mut subscription = self.subscribe_to_node(node_index, || {
+            panic!("No event handler available - use TestNetworkFixture::wait_for_block instead")
+        });
+
+        let event = if let Some(pred) = predicate {
+            subscription
+                .wait_for_with_timeout(
+                    |event| matches!(event, EventKind::Block(block) if pred(block)),
+                    timeout_duration,
+                )
+                .await?
+        } else {
+            subscription
+                .wait_for_with_timeout(
+                    |event| matches!(event, EventKind::Block(_)),
+                    timeout_duration,
+                )
+                .await?
+        };
+
+        match event {
+            EventKind::Block(block) => Ok(block),
+            _ => unreachable!("Predicate ensures this is a Block event"),
+        }
+    }
+
+    /// Wait for a specific slot to be reached.
+    ///
+    /// Subscribes to head events and waits for one with the given slot.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `slot` - The target slot to wait for
+    /// * `timeout_duration` - Maximum time to wait
+    pub async fn wait_for_slot(
+        &self,
+        node_index: usize,
+        slot: Slot,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<SseHead> {
+        self.wait_for_head(
+            node_index,
+            Some(|head: &SseHead| head.slot == slot),
+            timeout_duration,
+        )
+        .await
+    }
+
+    /// Wait for a specific epoch to be finalized.
+    ///
+    /// Subscribes to finalized checkpoint events and waits for one with the given epoch.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `epoch` - The target epoch to wait for finalization
+    /// * `timeout_duration` - Maximum time to wait
+    pub async fn wait_for_finalization(
+        &self,
+        node_index: usize,
+        epoch: Epoch,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<SseFinalizedCheckpoint> {
+        let mut subscription = self.subscribe_to_node(node_index, || {
+            panic!("No event handler available - use TestNetworkFixture::wait_for_finalization instead")
+        });
+
+        let event = subscription
+            .wait_for_with_timeout(
+                |event| matches!(event, EventKind::FinalizedCheckpoint(checkpoint) if checkpoint.epoch == epoch),
+                timeout_duration,
+            )
+            .await?;
+
+        match event {
+            EventKind::FinalizedCheckpoint(checkpoint) => Ok(checkpoint),
+            _ => unreachable!("Predicate ensures this is a FinalizedCheckpoint event"),
+        }
+    }
+
+    /// Wait for any event matching a predicate.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `predicate` - A function that returns true when the desired event is received
+    /// * `timeout_duration` - Maximum time to wait for the event
+    pub async fn wait_for_event<F>(
+        &self,
+        node_index: usize,
+        predicate: F,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<EventKind<E>>
+    where
+        F: Fn(&EventKind<E>) -> bool,
+    {
+        let mut subscription = self.subscribe_to_node(node_index, || {
+            panic!("No event handler available - use TestNetworkFixture::wait_for_event instead")
+        });
+
+        subscription.wait_for_with_timeout(predicate, timeout_duration).await
     }
 }
 
@@ -336,39 +435,6 @@ pub async fn wait_for_finalization<E: EthSpec>(
     }
 }
 
-/// Extension trait for ServerSentEventHandler to create subscriptions easily.
-pub trait ServerSentEventHandlerExt<E: EthSpec> {
-    /// Subscribe to a specific topic.
-    fn subscribe_to_topic(&self, topic: SseTopic) -> Receiver<EventKind<E>>;
-}
-
-impl<E: EthSpec> ServerSentEventHandlerExt<E> for ServerSentEventHandler<E> {
-    fn subscribe_to_topic(&self, topic: SseTopic) -> Receiver<EventKind<E>> {
-        match topic {
-            SseTopic::Attestation => self.subscribe_attestation(),
-            SseTopic::SingleAttestation => self.subscribe_single_attestation(),
-            SseTopic::Block => self.subscribe_block(),
-            SseTopic::BlockFull => self.subscribe_block_full(),
-            SseTopic::BlobSidecar => self.subscribe_blob_sidecar(),
-            SseTopic::DataColumnSidecar => self.subscribe_data_column_sidecar(),
-            SseTopic::FinalizedCheckpoint => self.subscribe_finalized(),
-            SseTopic::Head => self.subscribe_head(),
-            SseTopic::VoluntaryExit => self.subscribe_exit(),
-            SseTopic::ChainReorg => self.subscribe_reorgs(),
-            SseTopic::ContributionAndProof => self.subscribe_contributions(),
-            SseTopic::PayloadAttributes => self.subscribe_payload_attributes(),
-            SseTopic::LateHead => self.subscribe_late_head(),
-            SseTopic::LightClientFinalityUpdate => self.subscribe_light_client_finality_update(),
-            SseTopic::LightClientOptimisticUpdate => self.subscribe_light_client_optimistic_update(),
-            SseTopic::BlockReward => self.subscribe_block_reward(),
-            SseTopic::ProposerSlashing => self.subscribe_proposer_slashing(),
-            SseTopic::AttesterSlashing => self.subscribe_attester_slashing(),
-            SseTopic::BlsToExecutionChange => self.subscribe_bls_to_execution_change(),
-            SseTopic::BlockGossip => self.subscribe_block_gossip(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,14 +455,10 @@ mod tests {
         let handler = ServerSentEventHandler::new(16);
 
         // First subscription should create entry
-        let sub1 = cache.subscribe_to_node(0, SseTopic::Head, |topic| {
-            handler.subscribe_to_topic(topic)
-        });
+        let sub1 = cache.subscribe_to_node(0, || handler.subscribe_all());
 
-        // Second subscription for same node/topic should also work
-        let sub2 = cache.subscribe_to_node(0, SseTopic::Head, |topic| {
-            handler.subscribe_to_topic(topic)
-        });
+        // Second subscription for same node should also work
+        let sub2 = cache.subscribe_to_node(0, || handler.subscribe_all());
 
         // Both should be able to receive (though they won't get any events in this test)
         drop(sub1);
@@ -409,12 +471,8 @@ mod tests {
         let handler = ServerSentEventHandler::new(16);
 
         // Create some subscriptions
-        let _ = cache.subscribe_to_node(0, SseTopic::Head, |topic| {
-            handler.subscribe_to_topic(topic)
-        });
-        let _ = cache.subscribe_to_node(1, SseTopic::Block, |topic| {
-            handler.subscribe_to_topic(topic)
-        });
+        let _ = cache.subscribe_to_node(0, || handler.subscribe_all());
+        let _ = cache.subscribe_to_node(1, || handler.subscribe_all());
 
         // Clear all
         cache.clear();
@@ -430,12 +488,8 @@ mod tests {
         let handler = ServerSentEventHandler::new(16);
 
         // Create subscriptions for different nodes
-        let _ = cache.subscribe_to_node(0, SseTopic::Head, |topic| {
-            handler.subscribe_to_topic(topic)
-        });
-        let _ = cache.subscribe_to_node(1, SseTopic::Head, |topic| {
-            handler.subscribe_to_topic(topic)
-        });
+        let _ = cache.subscribe_to_node(0, || handler.subscribe_all());
+        let _ = cache.subscribe_to_node(1, || handler.subscribe_all());
 
         // Clear only node 0
         cache.clear_for_node(0);
@@ -447,7 +501,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_subscription_recv_timeout() {
         let handler = ServerSentEventHandler::<E>::new(16);
-        let mut subscription = EventSubscription::new(handler.subscribe_head());
+        let mut subscription = EventSubscription::new(handler.subscribe_all());
 
         // Should timeout since no events are sent
         let result = subscription
@@ -459,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_subscription_wait_for() {
         let handler = ServerSentEventHandler::<E>::new(16);
-        let mut subscription = EventSubscription::new(handler.subscribe_head());
+        let mut subscription = EventSubscription::new(handler.subscribe_all());
 
         // Send a head event in a separate task
         let handler_clone = handler.clone();
@@ -487,7 +541,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_subscription_wait_for_timeout() {
         let handler = ServerSentEventHandler::<E>::new(16);
-        let mut subscription = EventSubscription::new(handler.subscribe_head());
+        let mut subscription = EventSubscription::new(handler.subscribe_all());
 
         // Should timeout since no matching event is sent
         let result = subscription
@@ -499,18 +553,10 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_sse_topic_as_str() {
-        assert_eq!(SseTopic::Head.as_str(), "head");
-        assert_eq!(SseTopic::Block.as_str(), "block");
-        assert_eq!(SseTopic::FinalizedCheckpoint.as_str(), "finalized_checkpoint");
-        assert_eq!(SseTopic::Attestation.as_str(), "attestation");
-    }
-
     #[tokio::test]
     async fn test_wait_for_slot_helper() {
         let handler = ServerSentEventHandler::<E>::new(16);
-        let mut subscription = EventSubscription::new(handler.subscribe_head());
+        let mut subscription = EventSubscription::new(handler.subscribe_all());
 
         // Send a head event with slot 5
         let handler_clone = handler.clone();
@@ -537,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn test_wait_for_finalization_helper() {
         let handler = ServerSentEventHandler::<E>::new(16);
-        let mut subscription = EventSubscription::new(handler.subscribe_finalized());
+        let mut subscription = EventSubscription::new(handler.subscribe_all());
 
         // Send a finalized checkpoint event with epoch 10
         let handler_clone = handler.clone();

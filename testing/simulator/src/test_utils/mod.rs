@@ -26,7 +26,7 @@ pub use builder::TestNetworkFixtureBuilder;
 mod events;
 pub use events::{
     wait_for_block, wait_for_finalization, wait_for_head, wait_for_slot, EventSubscription,
-    ServerSentEventHandlerExt, SseTopic, SubscriptionCache,
+    SubscriptionCache,
 };
 
 use events::SubscriptionCache;
@@ -49,16 +49,11 @@ pub struct TestConfig {
 pub struct EventConfig {
     /// Whether SSE events are enabled for this test network.
     pub enabled: bool,
-    /// The channel capacity for SSE event subscriptions.
-    pub capacity: usize,
 }
 
 impl Default for EventConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            capacity: 128,
-        }
+        Self { enabled: true }
     }
 }
 
@@ -93,47 +88,40 @@ impl TestNetworkFixture {
     ///
     /// Uses lazy subscription: the subscription is created on first use and cached
     /// for reuse. The subscription is direct to the `ServerSentEventHandler`,
-    /// bypassing HTTP.
+    /// bypassing HTTP. Returns ALL event types.
     ///
     /// # Arguments
     /// * `node_index` - The index of the beacon node to subscribe to
-    /// * `topic` - The SSE topic to subscribe to
-    pub fn subscribe_to_node(
-        &self,
-        node_index: usize,
-        topic: SseTopic,
-    ) -> anyhow::Result<EventSubscription<E>> {
+    pub fn subscribe_to_node(&self, node_index: usize) -> anyhow::Result<EventSubscription<E>> {
         let handler = self
             .get_event_handler(node_index)
             .ok_or_else(|| anyhow::anyhow!("Event handler not available for node {}", node_index))?;
 
         let subscription = self
             .subscription_cache
-            .subscribe_to_node(node_index, topic, |t| handler.subscribe_to_topic(t));
+            .subscribe_to_node(node_index, || handler.subscribe_all());
 
         Ok(subscription)
     }
 
-    /// Wait for a specific event matching a predicate.
+    /// Wait for any event matching a predicate.
     ///
     /// Creates a subscription if needed, then waits for an event matching the predicate.
     ///
     /// # Arguments
     /// * `node_index` - The index of the beacon node to subscribe to
-    /// * `topic` - The SSE topic to subscribe to
     /// * `predicate` - A function that returns true when the desired event is received
     /// * `timeout_duration` - Maximum time to wait for the event
     pub async fn wait_for_event<F>(
         &self,
         node_index: usize,
-        topic: SseTopic,
         predicate: F,
         timeout_duration: Duration,
-    ) -> anyhow::Result<EventKind<E>>
+    ) -> anyhow::Result<eth2::types::EventKind<E>>
     where
-        F: Fn(&EventKind<E>) -> bool,
+        F: Fn(&eth2::types::EventKind<E>) -> bool,
     {
-        let mut subscription = self.subscribe_to_node(node_index, topic)?;
+        let mut subscription = self.subscribe_to_node(node_index)?;
         subscription.wait_for_with_timeout(predicate, timeout_duration).await
     }
 
@@ -148,12 +136,21 @@ impl TestNetworkFixture {
     pub async fn wait_for_slot(
         &self,
         node_index: usize,
-        slot: Slot,
+        slot: types::Slot,
         timeout_duration: Duration,
     ) -> anyhow::Result<eth2::types::SseHead> {
-        use events::wait_for_slot;
-        let mut subscription = self.subscribe_to_node(node_index, SseTopic::Head)?;
-        wait_for_slot(&mut subscription, slot, timeout_duration).await
+        let event = self
+            .wait_for_event(
+                node_index,
+                |event| matches!(event, eth2::types::EventKind::Head(head) if head.slot == slot),
+                timeout_duration,
+            )
+            .await?;
+
+        match event {
+            eth2::types::EventKind::Head(head) => Ok(head),
+            _ => unreachable!("Predicate ensures this is a Head event"),
+        }
     }
 
     /// Wait for a block matching a predicate.
@@ -173,9 +170,18 @@ impl TestNetworkFixture {
     where
         F: Fn(&eth2::types::SseBlock) -> bool,
     {
-        use events::wait_for_block;
-        let mut subscription = self.subscribe_to_node(node_index, SseTopic::Block)?;
-        wait_for_block(&mut subscription, predicate, timeout_duration).await
+        let event = self
+            .wait_for_event(
+                node_index,
+                |event| matches!(event, eth2::types::EventKind::Block(block) if predicate(block)),
+                timeout_duration,
+            )
+            .await?;
+
+        match event {
+            eth2::types::EventKind::Block(block) => Ok(block),
+            _ => unreachable!("Predicate ensures this is a Block event"),
+        }
     }
 
     /// Wait for a head event matching a predicate.
@@ -195,9 +201,18 @@ impl TestNetworkFixture {
     where
         F: Fn(&eth2::types::SseHead) -> bool,
     {
-        use events::wait_for_head;
-        let mut subscription = self.subscribe_to_node(node_index, SseTopic::Head)?;
-        wait_for_head(&mut subscription, predicate, timeout_duration).await
+        let event = self
+            .wait_for_event(
+                node_index,
+                |event| matches!(event, eth2::types::EventKind::Head(head) if predicate(head)),
+                timeout_duration,
+            )
+            .await?;
+
+        match event {
+            eth2::types::EventKind::Head(head) => Ok(head),
+            _ => unreachable!("Predicate ensures this is a Head event"),
+        }
     }
 
     /// Wait for a specific epoch to be finalized.
@@ -214,9 +229,18 @@ impl TestNetworkFixture {
         epoch: Epoch,
         timeout_duration: Duration,
     ) -> anyhow::Result<eth2::types::SseFinalizedCheckpoint> {
-        use events::wait_for_finalization;
-        let mut subscription = self.subscribe_to_node(node_index, SseTopic::FinalizedCheckpoint)?;
-        wait_for_finalization(&mut subscription, epoch, timeout_duration).await
+        let event = self
+            .wait_for_event(
+                node_index,
+                |event| matches!(event, eth2::types::EventKind::FinalizedCheckpoint(checkpoint) if checkpoint.epoch == epoch),
+                timeout_duration,
+            )
+            .await?;
+
+        match event {
+            eth2::types::EventKind::FinalizedCheckpoint(checkpoint) => Ok(checkpoint),
+            _ => unreachable!("Predicate ensures this is a FinalizedCheckpoint event"),
+        }
     }
 
     /// Get the event handler for a specific beacon node.

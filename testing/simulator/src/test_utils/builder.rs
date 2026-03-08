@@ -90,15 +90,6 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
         self
     }
 
-    /// Set the channel capacity for SSE event subscriptions.
-    ///
-    /// This controls how many events can be buffered per topic. Higher values
-    /// reduce the chance of events being dropped if the consumer is slow.
-    pub fn with_event_capacity(mut self, capacity: usize) -> Self {
-        self.event_config.capacity = capacity;
-        self
-    }
-
     /// Apply an arbitrary modification to the `EventConfig` used for the network.
     pub fn map_event_config(mut self, f: impl FnOnce(&mut EventConfig)) -> Self {
         f(&mut self.event_config);
@@ -328,7 +319,7 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
             network_params,
             logger_config,
             disable_stdout,
-            event_config,
+            event_config: _event_config,
         } = self;
 
         // Ensure the `ChainSpec` is configured with the correct genesis parameters based on the network params.
@@ -387,16 +378,6 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
             ))
             .await
             .map_err(anyhow::Error::msg)?;
-
-        // Configure event handler if events are enabled
-        if event_config.enabled {
-            info!(target: "simulator", "SSE events enabled with capacity: {}", event_config.capacity);
-            // The beacon_config is used when adding beacon nodes, so we would need to
-            // configure the event handler there. For now, we note that the event handler
-            // is typically configured via the ClientConfig or directly in the beacon chain builder.
-            // This is a placeholder for future enhancement where we could pass event_config
-            // through to the beacon node initialization.
-        }
 
         Ok((
             env,
