@@ -19,6 +19,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use types::{ChainSpec, ForkName, MinimalEthSpec as E};
 
 mod lookups;
+mod proof_sync_peer_scoring;
 mod range;
 
 type T = Witness<ManualSlotClock, E, MemoryStore<E>, MemoryStore<E>>;
