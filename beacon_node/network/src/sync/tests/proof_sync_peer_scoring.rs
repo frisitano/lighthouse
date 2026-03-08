@@ -7,10 +7,12 @@
 //! - Peer selection (best peer selection, failover)
 
 use super::*;
+use crate::NetworkMessage;
 use crate::sync::SyncMessage;
 use crate::sync::proof_sync::ProofSyncState;
+use bls::SignatureBytes;
 use execution_layer::MissingProofInfo;
-use lighthouse_network::NetworkMessage;
+use lighthouse_network::PeerId;
 use lighthouse_network::rpc::RequestType;
 use lighthouse_network::service::api_types::AppRequestId;
 use lighthouse_network::service::api_types::ExecutionProofsByRangeRequestId;
@@ -19,8 +21,6 @@ use lighthouse_network::service::api_types::SyncRequestId;
 use std::sync::Arc;
 use std::time::Duration;
 use types::Hash256;
-use types::Slot;
-use types::bls::SignatureBytes;
 use types::execution::eip8025::ExecutionProof;
 use types::execution::eip8025::SignedExecutionProof;
 
@@ -50,7 +50,7 @@ fn get_peer_score(rig: &TestRig, peer_id: PeerId) -> f64 {
 
 /// Helper to check if a peer is banned.
 fn is_peer_banned(rig: &TestRig, peer_id: PeerId) -> bool {
-    rig.network_globals.peers.read().is_banned(&peer_id)
+    rig.network_globals.peers.read().ban_status(&peer_id).is_some()
 }
 
 /// Helper to check if a peer is disconnected.
@@ -60,8 +60,7 @@ fn is_peer_connected(rig: &TestRig, peer_id: PeerId) -> bool {
 
 /// Helper to simulate a peer disconnect.
 fn disconnect_peer(rig: &mut TestRig, peer_id: PeerId) {
-    rig.network_globals.peers.write().disconnect(peer_id);
-    rig.send_sync_message(SyncMessage::Disconnect(peer_id));
+    rig.peer_disconnected(peer_id);
 }
 
 /// Helper to send an execution proof response.
@@ -101,86 +100,9 @@ fn bootstrap_to_fill_mode(rig: &mut TestRig) -> (ExecutionProofsByRangeRequestId
     (req_id, peer_id)
 }
 
-// Re-export helper methods from range.rs that we need
-impl TestRig {
-    fn find_execution_proofs_by_range_request(
-        &mut self,
-    ) -> (ExecutionProofsByRangeRequestId, PeerId) {
-        self.pop_received_network_event(|ev| match ev {
-            NetworkMessage::SendRequest {
-                peer_id,
-                request: RequestType::ExecutionProofsByRange(_),
-                app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
-            } => Some((*id, *peer_id)),
-            _ => None,
-        })
-        .unwrap_or_else(|e| panic!("Expected ExecutionProofsByRange request: {e:?}"))
-    }
-
-    fn find_execution_proofs_by_root_request(
-        &mut self,
-    ) -> (ExecutionProofsByRootRequestId, PeerId) {
-        self.pop_received_network_event(|ev| match ev {
-            NetworkMessage::SendRequest {
-                peer_id,
-                request: RequestType::ExecutionProofsByRoot(_),
-                app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRoot(id)),
-            } => Some((*id, *peer_id)),
-            _ => None,
-        })
-        .unwrap_or_else(|e| panic!("Expected ExecutionProofsByRoot request: {e:?}"))
-    }
-
-    fn terminate_execution_proofs_by_range(
-        &mut self,
-        req_id: ExecutionProofsByRangeRequestId,
-        peer_id: PeerId,
-    ) {
-        self.send_sync_message(SyncMessage::RpcExecutionProof {
-            sync_request_id: SyncRequestId::ExecutionProofsByRange(req_id),
-            peer_id,
-            execution_proof: None,
-        });
-    }
-
-    fn expect_no_penalty_for(&mut self, peer_id: PeerId) {
-        self.drain_network_rx();
-        let downscore_events = self
-            .network_rx_queue
-            .iter()
-            .filter_map(|ev| match ev {
-                NetworkMessage::ReportPeer {
-                    peer_id: p_id, msg, ..
-                } if p_id == &peer_id => Some(msg),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        if !downscore_events.is_empty() {
-            panic!("Some downscore events for {peer_id}: {downscore_events:?}");
-        }
-    }
-
-    fn expect_penalty(&mut self, peer_id: PeerId, expect_penalty_msg: &'static str) {
-        let penalty_msg = self
-            .pop_received_network_event(|ev| match ev {
-                NetworkMessage::ReportPeer {
-                    peer_id: p_id, msg, ..
-                } if p_id == &peer_id => Some(msg.to_owned()),
-                _ => None,
-            })
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Expected '{expect_penalty_msg}' penalty for peer {peer_id}: {:#?}",
-                    self.network_rx_queue
-                )
-            });
-        assert_eq!(
-            penalty_msg, expect_penalty_msg,
-            "Unexpected penalty msg for {peer_id}"
-        );
-        self.log(&format!("Found expected penalty {penalty_msg}"));
-    }
-}
+// Note: Helper methods find_execution_proofs_by_range_request,
+// find_execution_proofs_by_root_request, and terminate_execution_proofs_by_range
+// are defined in range.rs and available via TestRig.
 
 // =============================================================================
 // ExecutionProofByRange Tests

@@ -958,7 +958,7 @@ impl TestRig {
         assert!(self.network_rx_queue.is_empty());
     }
 
-    fn expect_no_penalty_for(&mut self, peer_id: PeerId) {
+    pub fn expect_no_penalty_for(&mut self, peer_id: PeerId) {
         self.drain_network_rx();
         let downscore_events = self
             .network_rx_queue
