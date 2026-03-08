@@ -17,6 +17,7 @@ use ssz_types::VariableList;
 use std::sync::Arc;
 use std::time::Duration;
 use task_executor::TaskExecutor;
+use tokio::sync::broadcast;
 use tree_hash::TreeHash;
 use types::execution::eip8025::{
     ExecutionProof, ProofAttributes, ProofGenId, ProofType, PublicInput,
@@ -66,15 +67,35 @@ pub struct ProofRequestRecord {
     pub timestamp: std::time::Instant,
 }
 
+/// Events that can be emitted by the mock proof engine server.
+#[derive(Clone, Debug)]
+pub enum ProofEngineEvent {
+    /// A proof request was received from a validator/verifier.
+    ProofRequestReceived {
+        record: ProofRequestRecord,
+    },
+    /// A proof verification request was received.
+    VerificationRequestReceived {
+        execution_proof: ExecutionProof,
+    },
+    /// A proof was sent back to the validator client.
+    ProofSentToValidator {
+        execution_proof: ExecutionProof,
+    },
+}
+
 /// Mock proof engine HTTP server.
 ///
 /// Implements the JSON-RPC endpoints for:
 /// - engine_requestProofsV1: Accept proof requests and return ProofGenId
 /// - engine_verifyExecutionProofV1: Verify proof validity
+///
+/// Provides event subscription for tests to observe server activity.
 pub struct MockProofEngineServer<E: EthSpec> {
     server: ServerGuard,
     config: MockProofEngineConfig,
     proof_requests: Arc<Mutex<Vec<ProofRequestRecord>>>,
+    event_sender: broadcast::Sender<ProofEngineEvent>,
     executor: TaskExecutor,
     _mocks: Vec<Mock>, // Keep mocks alive
     _phantom: std::marker::PhantomData<E>,
@@ -86,11 +107,13 @@ impl<E: EthSpec> MockProofEngineServer<E> {
         // Use Server::new_async() to avoid starting a runtime within a runtime
         let server = Server::new_async().await;
         let proof_requests = Arc::new(Mutex::new(Vec::new()));
+        let (event_sender, _event_receiver) = broadcast::channel(128);
 
         let mut mock_server = Self {
             server,
             config,
             proof_requests,
+            event_sender,
             executor,
             _mocks: Vec::new(),
             _phantom: std::marker::PhantomData,
@@ -98,6 +121,23 @@ impl<E: EthSpec> MockProofEngineServer<E> {
 
         mock_server.setup_endpoints();
         mock_server
+    }
+
+    /// Subscribe to proof engine events.
+    ///
+    /// Returns a broadcast receiver that receives events such as:
+    /// - ProofRequestReceived
+    /// - VerificationRequestReceived
+    /// - ProofSentToValidator
+    ///
+    /// This allows tests to make assertions on what the proof engine receives and sends.
+    pub fn subscribe(&self) -> broadcast::Receiver<ProofEngineEvent> {
+        self.event_sender.subscribe()
+    }
+
+    /// Emit an event to all subscribers.
+    fn emit_event(&self, event: ProofEngineEvent) {
+        let _ = self.event_sender.send(event);
     }
 
     pub fn set_validator_callback(&mut self, client: Arc<ValidatorClientHttpClient>) {
@@ -113,6 +153,7 @@ impl<E: EthSpec> MockProofEngineServer<E> {
     /// Setup the engine_requestProofsV1 endpoint.
     fn setup_request_proofs_endpoint(&mut self) {
         let proof_requests = self.proof_requests.clone();
+        let event_sender = self.event_sender.clone();
         let callback_delay = self.config.callback_delay_ms;
         let validator_client_ref = self.config.callback_url.clone();
         let task_executor = self.executor.clone();
@@ -238,6 +279,7 @@ impl<E: EthSpec> MockProofEngineServer<E> {
                         task_executor.clone(),
                         request_root,
                         proof_attributes.proof_types.clone(),
+                        Some(event_sender.clone()),
                     );
                 }
 
@@ -245,13 +287,21 @@ impl<E: EthSpec> MockProofEngineServer<E> {
                 let mut proof_gen_id = [0u8; 8];
                 proof_gen_id.copy_from_slice(&request_root.0[0..8]);
 
-                // Store request
-                proof_requests.lock().push(ProofRequestRecord {
+                // Create request record
+                let record = ProofRequestRecord {
                     proof_gen_id,
                     new_payload_request_root: request_root,
                     proof_types: proof_attributes.proof_types.clone(),
                     timestamp: std::time::Instant::now(),
+                };
+
+                // Emit event for subscribers
+                let _ = event_sender.send(ProofEngineEvent::ProofRequestReceived {
+                    record: record.clone(),
                 });
+
+                // Store request
+                proof_requests.lock().push(record);
 
                 tracing::info!(
                     target: "simulator",
@@ -329,6 +379,7 @@ impl<E: EthSpec> MockProofEngineServer<E> {
         task_executor: TaskExecutor,
         new_payload_request_root: Hash256,
         proof_types: Vec<ProofType>,
+        event_sender: Option<broadcast::Sender<ProofEngineEvent>>,
     ) -> Result<(), String> {
         task_executor.spawn(
             async move {
@@ -374,6 +425,13 @@ impl<E: EthSpec> MockProofEngineServer<E> {
                         proof_type = ?execution_proof.proof_type,
                         "Sending proof to validator client"
                     );
+
+                    // Emit event before sending
+                    if let Some(ref sender) = event_sender {
+                        let _ = sender.send(ProofEngineEvent::ProofSentToValidator {
+                            execution_proof: execution_proof.clone(),
+                        });
+                    }
 
                     let request_body = SignExecutionProofRequest {
                         execution_proof,

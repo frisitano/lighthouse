@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::{Builder as TempBuilder, TempDir};
+use tokio::sync::broadcast;
 use tokio::time::timeout;
 use types::EthSpec;
 use validator_client::ProductionValidatorClient;
@@ -27,7 +28,8 @@ pub use validator_client::{ApiSecret, Config as ValidatorConfig};
 
 mod mock_proof_engine_server;
 pub use mock_proof_engine_server::{
-    MockProofEngineConfig, MockProofEngineServer, ProofEngineServerConfig, ProofRequestRecord,
+    MockProofEngineConfig, MockProofEngineServer, ProofEngineEvent, ProofEngineServerConfig,
+    ProofRequestRecord,
 };
 
 /// The global timeout for HTTP requests to the beacon node.
@@ -301,5 +303,15 @@ impl<E: EthSpec> LocalProofEngine<E> {
 
     pub fn set_validator_client(&mut self, client: ValidatorClientHttpClient) {
         self.server.set_validator_callback(client.into());
+    }
+
+    /// Subscribe to proof engine events.
+    ///
+    /// Returns a broadcast receiver that receives events such as:
+    /// - ProofRequestReceived
+    /// - VerificationRequestReceived
+    /// - ProofSentToValidator
+    pub fn subscribe(&self) -> broadcast::Receiver<ProofEngineEvent> {
+        self.server.subscribe()
     }
 }

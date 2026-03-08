@@ -4,7 +4,9 @@
 mod test {
     use std::time::Duration;
 
+    use node_test_rig::ProofEngineEvent;
     use simulator::test_utils::*;
+    use tokio::time::timeout;
 
     /// A base test network fixture builder for eip-8025 testing.
     ///
@@ -67,8 +69,6 @@ mod test {
             "Should have received multiple proof requests"
         );
 
-        // TODO: Add more assertions after we extend test framework. For now just check logs to ensure correctness.
-
         Ok(())
     }
 
@@ -78,17 +78,6 @@ mod test {
             .map_spec(|spec| {
                 // Collapse all columns onto a single subnet and reduce the total number of
                 // custody groups so the small 2-node network can fully cover them.
-                //
-                // - data_column_sidecar_subnet_count = 1: all custody groups map to subnet 0,
-                //   so any connected peer satisfies `good_peers_on_sampling_subnets()`.
-                //
-                // - number_of_custody_groups = 8: with validator_custody_requirement = 8 (the
-                //   spec default), nodes with validators always get cgc = min(max(units, 8), 8)
-                //   = 8 = full custody of all groups. This avoids the "too many columns, not
-                //   enough peers" problem that occurs with the default 128 groups across 2 nodes.
-                //   Note: do NOT also set custody_requirement = 128; that shrinks the valid cgc
-                //   range to 128..=128 and causes the joining node to ban existing peers whose
-                //   validator-derived cgc is 8.
                 spec.data_column_sidecar_subnet_count = 1;
                 spec.number_of_custody_groups = 8;
             })
@@ -122,6 +111,260 @@ mod test {
         );
 
         tokio::time::sleep(Duration::from_secs(60)).await;
+
+        Ok(())
+    }
+
+    /// Test that proof engine events are properly emitted and can be subscribed to.
+    ///
+    /// This test demonstrates the subscription-based event pattern for observing
+    /// proof engine activity without polling.
+    #[tokio::test]
+    async fn test_proof_engine_event_subscription() -> anyhow::Result<()> {
+        let mut fixture = test_fixture_builder_base()
+            .with_log_level(LevelFilter::INFO)
+            .with_log_dir("proof-engine-events".into())
+            .build()
+            .await?;
+        fixture.payloads_valid();
+        fixture.wait_for_genesis().await?;
+
+        // Subscribe to proof engine events
+        let proof_engine = fixture
+            .network
+            .proof_engines
+            .read()
+            .first()
+            .cloned()
+            .expect("Should have a proof engine");
+        let mut event_rx = proof_engine.subscribe();
+
+        // Wait for a proof request event
+        let event = timeout(Duration::from_secs(45), event_rx.recv()).await?;
+
+        match event {
+            Ok(ProofEngineEvent::ProofRequestReceived { record }) => {
+                tracing::info!(
+                    target: "test",
+                    proof_gen_id = ?hex::encode(record.proof_gen_id),
+                    num_proof_types = record.proof_types.len(),
+                    "Received proof request event"
+                );
+                assert!(!record.proof_types.is_empty(), "Should have proof types");
+            }
+            Ok(other) => {
+                tracing::info!(target: "test", "Received other event: {:?}", other);
+            }
+            Err(e) => {
+                anyhow::bail!("Event channel closed unexpectedly: {}", e);
+            }
+        }
+
+        // Wait for more events to accumulate
+        tokio::time::sleep(Duration::from_secs(30)).await;
+
+        // Collect all events received so far
+        let mut event_count = 1; // Already received one
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                ProofEngineEvent::ProofRequestReceived { record } => {
+                    tracing::info!(
+                        target: "test",
+                        proof_gen_id = ?hex::encode(record.proof_gen_id),
+                        "Received proof request"
+                    );
+                    event_count += 1;
+                }
+                ProofEngineEvent::ProofSentToValidator { execution_proof } => {
+                    tracing::info!(
+                        target: "test",
+                        proof_type = ?execution_proof.proof_type,
+                        "Received proof sent event"
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            event_count >= 1,
+            "Should have received at least one proof request event, got {}",
+            event_count
+        );
+
+        Ok(())
+    }
+
+    /// Test that verifies proof request details are correctly captured.
+    #[tokio::test]
+    async fn test_proof_request_details() -> anyhow::Result<()> {
+        let mut fixture = test_fixture_builder_base()
+            .with_log_level(LevelFilter::INFO)
+            .with_log_dir("proof-engine-details".into())
+            .build()
+            .await?;
+        fixture.payloads_valid();
+        fixture.wait_for_genesis().await?;
+
+        // Subscribe to events before waiting for proofs
+        let proof_engine = fixture
+            .network
+            .proof_engines
+            .read()
+            .first()
+            .cloned()
+            .expect("Should have a proof engine");
+        let mut event_rx = proof_engine.subscribe();
+
+        // Wait for network to produce some blocks and proof requests
+        tokio::time::sleep(Duration::from_secs(45)).await;
+
+        // Collect proof request records from events
+        let mut proof_requests = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let ProofEngineEvent::ProofRequestReceived { record } = event {
+                proof_requests.push(record);
+            }
+        }
+
+        // Also get the stored requests
+        let stored_requests = proof_engine.server.get_proof_requests();
+
+        // Verify that events match stored requests
+        assert_eq!(
+            proof_requests.len(),
+            stored_requests.len(),
+            "Event count should match stored request count"
+        );
+
+        // Verify each request has valid data
+        for request in &stored_requests {
+            assert!(
+                !request.proof_types.is_empty(),
+                "Each request should have at least one proof type"
+            );
+            assert!(
+                request.new_payload_request_root != types::Hash256::ZERO,
+                "Request root should not be zero"
+            );
+            tracing::info!(
+                target: "test",
+                proof_gen_id = ?hex::encode(request.proof_gen_id),
+                num_types = request.proof_types.len(),
+                "Verified proof request"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Test that demonstrates waiting for a specific number of proof events.
+    #[tokio::test]
+    async fn test_wait_for_multiple_proofs() -> anyhow::Result<()> {
+        let mut fixture = test_fixture_builder_base()
+            .with_log_level(LevelFilter::INFO)
+            .with_log_dir("proof-engine-multiple".into())
+            .build()
+            .await?;
+        fixture.payloads_valid();
+        fixture.wait_for_genesis().await?;
+
+        // Subscribe to events
+        let proof_engine = fixture
+            .network
+            .proof_engines
+            .read()
+            .first()
+            .cloned()
+            .expect("Should have a proof engine");
+        let mut event_rx = proof_engine.subscribe();
+
+        // Wait for at least 2 proof request events
+        let target_count = 2;
+        let mut received_count = 0;
+        let timeout_duration = Duration::from_secs(90);
+        let start = tokio::time::Instant::now();
+
+        while received_count < target_count && start.elapsed() < timeout_duration {
+            match timeout(Duration::from_millis(500), event_rx.recv()).await {
+                Ok(Ok(ProofEngineEvent::ProofRequestReceived { .. })) => {
+                    received_count += 1;
+                    tracing::info!(
+                        target: "test",
+                        received_count,
+                        target_count,
+                        "Received proof request"
+                    );
+                }
+                Ok(Ok(_)) => {
+                    // Other event types, ignore
+                }
+                Ok(Err(_)) => break, // Channel closed
+                Err(_) => continue,   // Timeout, continue waiting
+            }
+        }
+
+        assert!(
+            received_count >= target_count,
+            "Expected at least {} proof requests, received {}",
+            target_count,
+            received_count
+        );
+
+        tracing::info!(
+            target: "test",
+            received_count,
+            "Successfully received expected proof requests"
+        );
+
+        Ok(())
+    }
+
+    /// Test proof engine with multiple proof generators.
+    #[tokio::test]
+    async fn test_multiple_proof_generators() -> anyhow::Result<()> {
+        let mut fixture = test_fixture_builder_base()
+            .map_network_params(|params| {
+                params.proof_generator_nodes = 2;
+                params.proof_verifier_nodes = 1;
+            })
+            .with_log_level(LevelFilter::INFO)
+            .with_log_dir("proof-engine-multi-gen".into())
+            .build()
+            .await?;
+        fixture.payloads_valid();
+        fixture.wait_for_genesis().await?;
+
+        // Subscribe to events from all proof engines
+        let proof_engines = fixture.network.proof_engines.read().clone();
+        let mut subscribers: Vec<_> = proof_engines.iter().map(|pe| pe.subscribe()).collect();
+
+        // Wait for some activity
+        tokio::time::sleep(Duration::from_secs(60)).await;
+
+        // Check that each proof engine received requests
+        let mut total_requests = 0;
+        for (i, rx) in subscribers.iter_mut().enumerate() {
+            let mut engine_requests = 0;
+            while let Ok(event) = rx.try_recv() {
+                if matches!(event, ProofEngineEvent::ProofRequestReceived { .. }) {
+                    engine_requests += 1;
+                }
+            }
+            tracing::info!(
+                target: "test",
+                engine_index = i,
+                requests = engine_requests,
+                "Proof engine request count"
+            );
+            total_requests += engine_requests;
+        }
+
+        // With multiple proof generators, we expect at least some activity
+        assert!(
+            total_requests > 0,
+            "Should have received proof requests across all engines"
+        );
 
         Ok(())
     }

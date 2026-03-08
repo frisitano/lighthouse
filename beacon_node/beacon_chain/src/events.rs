@@ -6,6 +6,7 @@ use types::EthSpec;
 
 const DEFAULT_CHANNEL_CAPACITY: usize = 16;
 
+#[derive(Clone)]
 pub struct ServerSentEventHandler<E: EthSpec> {
     attestation_tx: Sender<EventKind<E>>,
     single_attestation_tx: Sender<EventKind<E>>,

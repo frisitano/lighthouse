@@ -29,7 +29,6 @@ pub use events::{
     SubscriptionCache,
 };
 
-use events::SubscriptionCache;
 use tokio::time::Duration;
 
 pub struct TestNetworkFixture<E: EthSpec = MinimalEthSpec> {
@@ -57,7 +56,7 @@ impl Default for EventConfig {
     }
 }
 
-impl TestNetworkFixture {
+impl<E: EthSpec> TestNetworkFixture<E> {
     pub fn builder() -> TestNetworkFixtureBuilder {
         TestNetworkFixtureBuilder::default()
     }
@@ -173,7 +172,7 @@ impl TestNetworkFixture {
         let event = self
             .wait_for_event(
                 node_index,
-                |event| matches!(event, eth2::types::EventKind::Block(block) if predicate(block)),
+                |event| matches!(event, eth2::types::EventKind::Block(block) if predicate(&block)),
                 timeout_duration,
             )
             .await?;
@@ -204,7 +203,7 @@ impl TestNetworkFixture {
         let event = self
             .wait_for_event(
                 node_index,
-                |event| matches!(event, eth2::types::EventKind::Head(head) if predicate(head)),
+                |event| matches!(event, eth2::types::EventKind::Head(head) if predicate(&head)),
                 timeout_duration,
             )
             .await?;
