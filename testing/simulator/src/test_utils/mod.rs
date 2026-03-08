@@ -23,15 +23,43 @@ pub use types::{Address, ChainSpec, Epoch, EthSpec, MinimalEthSpec};
 mod builder;
 pub use builder::TestNetworkFixtureBuilder;
 
+mod events;
+pub use events::{
+    wait_for_block, wait_for_finalization, wait_for_head, wait_for_slot, EventSubscription,
+    ServerSentEventHandlerExt, SseTopic, SubscriptionCache,
+};
+
+use events::SubscriptionCache;
+use tokio::time::Duration;
+
 pub struct TestNetworkFixture<E: EthSpec = MinimalEthSpec> {
     pub env: TestEnvironment<E>,
     pub network: LocalNetwork<E>,
     pub config: TestConfig,
+    subscription_cache: SubscriptionCache<E>,
 }
 
 pub struct TestConfig {
     pub client: ClientConfig,
     pub execution: MockExecutionConfig,
+}
+
+/// Configuration for SSE subscriptions.
+#[derive(Debug, Clone)]
+pub struct EventConfig {
+    /// Whether SSE events are enabled for this test network.
+    pub enabled: bool,
+    /// The channel capacity for SSE event subscriptions.
+    pub capacity: usize,
+}
+
+impl Default for EventConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            capacity: 128,
+        }
+    }
 }
 
 impl TestNetworkFixture {
@@ -59,6 +87,157 @@ impl TestNetworkFixture {
             .map_err(anyhow::Error::msg)?;
         tokio::time::sleep(duration_to_genesis).await;
         Ok(())
+    }
+
+    /// Subscribe to events from a specific beacon node.
+    ///
+    /// Uses lazy subscription: the subscription is created on first use and cached
+    /// for reuse. The subscription is direct to the `ServerSentEventHandler`,
+    /// bypassing HTTP.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to subscribe to
+    /// * `topic` - The SSE topic to subscribe to
+    pub fn subscribe_to_node(
+        &self,
+        node_index: usize,
+        topic: SseTopic,
+    ) -> anyhow::Result<EventSubscription<E>> {
+        let handler = self
+            .get_event_handler(node_index)
+            .ok_or_else(|| anyhow::anyhow!("Event handler not available for node {}", node_index))?;
+
+        let subscription = self
+            .subscription_cache
+            .subscribe_to_node(node_index, topic, |t| handler.subscribe_to_topic(t));
+
+        Ok(subscription)
+    }
+
+    /// Wait for a specific event matching a predicate.
+    ///
+    /// Creates a subscription if needed, then waits for an event matching the predicate.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to subscribe to
+    /// * `topic` - The SSE topic to subscribe to
+    /// * `predicate` - A function that returns true when the desired event is received
+    /// * `timeout_duration` - Maximum time to wait for the event
+    pub async fn wait_for_event<F>(
+        &self,
+        node_index: usize,
+        topic: SseTopic,
+        predicate: F,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<EventKind<E>>
+    where
+        F: Fn(&EventKind<E>) -> bool,
+    {
+        let mut subscription = self.subscribe_to_node(node_index, topic)?;
+        subscription.wait_for_with_timeout(predicate, timeout_duration).await
+    }
+
+    /// Wait for a specific slot to be reached.
+    ///
+    /// Subscribes to head events and waits for one with the given slot.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `slot` - The target slot to wait for
+    /// * `timeout_duration` - Maximum time to wait
+    pub async fn wait_for_slot(
+        &self,
+        node_index: usize,
+        slot: Slot,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<eth2::types::SseHead> {
+        use events::wait_for_slot;
+        let mut subscription = self.subscribe_to_node(node_index, SseTopic::Head)?;
+        wait_for_slot(&mut subscription, slot, timeout_duration).await
+    }
+
+    /// Wait for a block matching a predicate.
+    ///
+    /// Subscribes to block events and waits for one matching the predicate.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `predicate` - A function that returns true when the desired block is received
+    /// * `timeout_duration` - Maximum time to wait
+    pub async fn wait_for_block<F>(
+        &self,
+        node_index: usize,
+        predicate: F,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<eth2::types::SseBlock>
+    where
+        F: Fn(&eth2::types::SseBlock) -> bool,
+    {
+        use events::wait_for_block;
+        let mut subscription = self.subscribe_to_node(node_index, SseTopic::Block)?;
+        wait_for_block(&mut subscription, predicate, timeout_duration).await
+    }
+
+    /// Wait for a head event matching a predicate.
+    ///
+    /// Subscribes to head events and waits for one matching the predicate.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `predicate` - A function that returns true when the desired head is received
+    /// * `timeout_duration` - Maximum time to wait
+    pub async fn wait_for_head<F>(
+        &self,
+        node_index: usize,
+        predicate: F,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<eth2::types::SseHead>
+    where
+        F: Fn(&eth2::types::SseHead) -> bool,
+    {
+        use events::wait_for_head;
+        let mut subscription = self.subscribe_to_node(node_index, SseTopic::Head)?;
+        wait_for_head(&mut subscription, predicate, timeout_duration).await
+    }
+
+    /// Wait for a specific epoch to be finalized.
+    ///
+    /// Subscribes to finalized checkpoint events and waits for one with the given epoch.
+    ///
+    /// # Arguments
+    /// * `node_index` - The index of the beacon node to monitor
+    /// * `epoch` - The target epoch to wait for finalization
+    /// * `timeout_duration` - Maximum time to wait
+    pub async fn wait_for_finalization(
+        &self,
+        node_index: usize,
+        epoch: Epoch,
+        timeout_duration: Duration,
+    ) -> anyhow::Result<eth2::types::SseFinalizedCheckpoint> {
+        use events::wait_for_finalization;
+        let mut subscription = self.subscribe_to_node(node_index, SseTopic::FinalizedCheckpoint)?;
+        wait_for_finalization(&mut subscription, epoch, timeout_duration).await
+    }
+
+    /// Get the event handler for a specific beacon node.
+    fn get_event_handler(
+        &self,
+        node_index: usize,
+    ) -> Option<beacon_chain::ServerSentEventHandler<E>> {
+        let beacon_nodes = self.network.beacon_nodes.read();
+        let node = beacon_nodes.get(node_index)?;
+        let beacon_chain = node.client.beacon_chain()?;
+        beacon_chain.event_handler.clone()
+    }
+
+    /// Clear all cached SSE subscriptions.
+    pub fn clear_event_subscriptions(&self) {
+        self.subscription_cache.clear();
+    }
+
+    /// Clear cached SSE subscriptions for a specific node.
+    pub fn clear_event_subscriptions_for_node(&self, node_index: usize) {
+        self.subscription_cache.clear_for_node(node_index);
     }
 }
 
