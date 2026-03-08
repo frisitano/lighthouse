@@ -45,6 +45,9 @@ mod rate_limiter;
 mod response_limiter;
 mod self_limiter;
 
+#[cfg(test)]
+mod tests;
+
 // Maximum number of concurrent requests per protocol ID that a client may issue.
 const MAX_CONCURRENT_REQUESTS: usize = 2;
 
