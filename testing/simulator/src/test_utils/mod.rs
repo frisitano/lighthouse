@@ -25,8 +25,8 @@ pub use builder::TestNetworkFixtureBuilder;
 
 mod events;
 pub use events::{
-    wait_for_block, wait_for_finalization, wait_for_head, wait_for_slot, EventSubscription,
-    SubscriptionCache,
+    wait_for_block, wait_for_finalization, wait_for_head, wait_for_slot,
+    BeaconNodeEventSubscription, ProofEngineEventSubscription, SubscriptionCache,
 };
 
 use tokio::time::Duration;
@@ -91,7 +91,10 @@ impl<E: EthSpec> TestNetworkFixture<E> {
     ///
     /// # Arguments
     /// * `node_index` - The index of the beacon node to subscribe to
-    pub fn subscribe_to_node(&self, node_index: usize) -> anyhow::Result<EventSubscription<E>> {
+    pub fn subscribe_to_node(
+        &self,
+        node_index: usize,
+    ) -> anyhow::Result<BeaconNodeEventSubscription<E>> {
         let handler = self
             .get_event_handler(node_index)
             .ok_or_else(|| anyhow::anyhow!("Event handler not available for node {}", node_index))?;
@@ -101,6 +104,26 @@ impl<E: EthSpec> TestNetworkFixture<E> {
             .subscribe_to_node(node_index, || handler.subscribe_all());
 
         Ok(subscription)
+    }
+
+    /// Subscribe to events from a specific proof engine.
+    ///
+    /// Returns a subscription that receives proof engine events such as:
+    /// - ProofRequestReceived
+    /// - ProofSentToValidator
+    ///
+    /// # Arguments
+    /// * `proof_engine_index` - The index of the proof engine to subscribe to (default: 0)
+    pub fn subscribe_to_proof_engine(
+        &self,
+        proof_engine_index: usize,
+    ) -> anyhow::Result<ProofEngineEventSubscription> {
+        let proof_engines = self.network.proof_engines.read();
+        let proof_engine = proof_engines
+            .get(proof_engine_index)
+            .ok_or_else(|| anyhow::anyhow!("Proof engine {} not found", proof_engine_index))?;
+
+        Ok(ProofEngineEventSubscription::new(proof_engine.subscribe()))
     }
 
     /// Wait for any event matching a predicate.

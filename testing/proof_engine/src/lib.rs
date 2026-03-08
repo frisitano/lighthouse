@@ -6,7 +6,6 @@ mod test {
 
     use node_test_rig::ProofEngineEvent;
     use simulator::test_utils::*;
-    use tokio::time::timeout;
 
     /// A base test network fixture builder for eip-8025 testing.
     ///
@@ -129,67 +128,49 @@ mod test {
         fixture.payloads_valid();
         fixture.wait_for_genesis().await?;
 
-        // Subscribe to proof engine events
-        let proof_engine = fixture
-            .network
-            .proof_engines
-            .read()
-            .first()
-            .cloned()
-            .expect("Should have a proof engine");
-        let mut event_rx = proof_engine.subscribe();
+        // Subscribe to proof engine events using the fixture helper
+        let mut subscription = fixture.subscribe_to_proof_engine(0)?;
 
-        // Wait for a proof request event
-        let event = timeout(Duration::from_secs(45), event_rx.recv()).await?;
+        // Wait for a proof request event using the helper method
+        let record = subscription
+            .wait_for_proof_request(None, Duration::from_secs(45))
+            .await?;
 
-        match event {
-            Ok(ProofEngineEvent::ProofRequestReceived { record }) => {
-                tracing::info!(
-                    target: "test",
-                    proof_gen_id = ?hex::encode(record.proof_gen_id),
-                    num_proof_types = record.proof_types.len(),
-                    "Received proof request event"
-                );
-                assert!(!record.proof_types.is_empty(), "Should have proof types");
-            }
-            Ok(other) => {
-                tracing::info!(target: "test", "Received other event: {:?}", other);
-            }
-            Err(e) => {
-                anyhow::bail!("Event channel closed unexpectedly: {}", e);
-            }
-        }
+        tracing::info!(
+            target: "test",
+            proof_gen_id = ?hex::encode(record.proof_gen_id),
+            num_proof_types = record.proof_types.len(),
+            "Received proof request event"
+        );
+        assert!(!record.proof_types.is_empty(), "Should have proof types");
 
         // Wait for more events to accumulate
         tokio::time::sleep(Duration::from_secs(30)).await;
 
-        // Collect all events received so far
-        let mut event_count = 1; // Already received one
-        while let Ok(event) = event_rx.try_recv() {
-            match event {
-                ProofEngineEvent::ProofRequestReceived { record } => {
-                    tracing::info!(
-                        target: "test",
-                        proof_gen_id = ?hex::encode(record.proof_gen_id),
-                        "Received proof request"
-                    );
-                    event_count += 1;
-                }
-                ProofEngineEvent::ProofSentToValidator { execution_proof } => {
-                    tracing::info!(
-                        target: "test",
-                        proof_type = ?execution_proof.proof_type,
-                        "Received proof sent event"
-                    );
-                }
-                _ => {}
-            }
-        }
+        // Collect all pending events
+        let events = subscription.collect_pending();
+        tracing::info!(target: "test", count = events.len(), "Collected pending events");
+
+        // Count proof request and sent events
+        let proof_requests: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ProofEngineEvent::ProofRequestReceived { .. }))
+            .collect();
+        let proofs_sent: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ProofEngineEvent::ProofSentToValidator { .. }))
+            .collect();
+
+        tracing::info!(
+            target: "test",
+            proof_requests = proof_requests.len(),
+            proofs_sent = proofs_sent.len(),
+            "Event summary"
+        );
 
         assert!(
-            event_count >= 1,
-            "Should have received at least one proof request event, got {}",
-            event_count
+            !proof_requests.is_empty(),
+            "Should have received at least one proof request event"
         );
 
         Ok(())
@@ -207,6 +188,22 @@ mod test {
         fixture.wait_for_genesis().await?;
 
         // Subscribe to events before waiting for proofs
+        let mut subscription = fixture.subscribe_to_proof_engine(0)?;
+
+        // Wait for network to produce some blocks and proof requests
+        tokio::time::sleep(Duration::from_secs(45)).await;
+
+        // Collect proof request records from events
+        let events = subscription.collect_pending();
+        let proof_requests: Vec<_> = events
+            .into_iter()
+            .filter_map(|e| match e {
+                ProofEngineEvent::ProofRequestReceived { record } => Some(record),
+                _ => None,
+            })
+            .collect();
+
+        // Also get the stored requests
         let proof_engine = fixture
             .network
             .proof_engines
@@ -214,20 +211,6 @@ mod test {
             .first()
             .cloned()
             .expect("Should have a proof engine");
-        let mut event_rx = proof_engine.subscribe();
-
-        // Wait for network to produce some blocks and proof requests
-        tokio::time::sleep(Duration::from_secs(45)).await;
-
-        // Collect proof request records from events
-        let mut proof_requests = Vec::new();
-        while let Ok(event) = event_rx.try_recv() {
-            if let ProofEngineEvent::ProofRequestReceived { record } = event {
-                proof_requests.push(record);
-            }
-        }
-
-        // Also get the stored requests
         let stored_requests = proof_engine.server.get_proof_requests();
 
         // Verify that events match stored requests
@@ -269,40 +252,14 @@ mod test {
         fixture.payloads_valid();
         fixture.wait_for_genesis().await?;
 
-        // Subscribe to events
-        let proof_engine = fixture
-            .network
-            .proof_engines
-            .read()
-            .first()
-            .cloned()
-            .expect("Should have a proof engine");
-        let mut event_rx = proof_engine.subscribe();
+        // Subscribe to events using the fixture helper
+        let mut subscription = fixture.subscribe_to_proof_engine(0)?;
 
         // Wait for at least 2 proof request events
         let target_count = 2;
-        let mut received_count = 0;
         let timeout_duration = Duration::from_secs(90);
-        let start = tokio::time::Instant::now();
 
-        while received_count < target_count && start.elapsed() < timeout_duration {
-            match timeout(Duration::from_millis(500), event_rx.recv()).await {
-                Ok(Ok(ProofEngineEvent::ProofRequestReceived { .. })) => {
-                    received_count += 1;
-                    tracing::info!(
-                        target: "test",
-                        received_count,
-                        target_count,
-                        "Received proof request"
-                    );
-                }
-                Ok(Ok(_)) => {
-                    // Other event types, ignore
-                }
-                Ok(Err(_)) => break, // Channel closed
-                Err(_) => continue,   // Timeout, continue waiting
-            }
-        }
+        let received_count = subscription.count_proof_requests(timeout_duration).await;
 
         assert!(
             received_count >= target_count,
@@ -335,35 +292,79 @@ mod test {
         fixture.payloads_valid();
         fixture.wait_for_genesis().await?;
 
-        // Subscribe to events from all proof engines
-        let proof_engines = fixture.network.proof_engines.read().clone();
-        let mut subscribers: Vec<_> = proof_engines.iter().map(|pe| pe.subscribe()).collect();
+        // Subscribe to events from all proof engines using fixture helper
+        let mut subscription_0 = fixture.subscribe_to_proof_engine(0)?;
+        let mut subscription_1 = fixture.subscribe_to_proof_engine(1)?;
 
         // Wait for some activity
         tokio::time::sleep(Duration::from_secs(60)).await;
 
-        // Check that each proof engine received requests
-        let mut total_requests = 0;
-        for (i, rx) in subscribers.iter_mut().enumerate() {
-            let mut engine_requests = 0;
-            while let Ok(event) = rx.try_recv() {
-                if matches!(event, ProofEngineEvent::ProofRequestReceived { .. }) {
-                    engine_requests += 1;
-                }
-            }
-            tracing::info!(
-                target: "test",
-                engine_index = i,
-                requests = engine_requests,
-                "Proof engine request count"
-            );
-            total_requests += engine_requests;
-        }
+        // Collect events from both proof engines
+        let events_0 = subscription_0.collect_pending();
+        let events_1 = subscription_1.collect_pending();
+
+        // Count proof requests from each engine
+        let count_0 = events_0
+            .iter()
+            .filter(|e| matches!(e, ProofEngineEvent::ProofRequestReceived { .. }))
+            .count();
+        let count_1 = events_1
+            .iter()
+            .filter(|e| matches!(e, ProofEngineEvent::ProofRequestReceived { .. }))
+            .count();
+
+        let total_requests = count_0 + count_1;
+
+        tracing::info!(
+            target: "test",
+            engine_0 = count_0,
+            engine_1 = count_1,
+            total = total_requests,
+            "Proof engine request counts"
+        );
 
         // With multiple proof generators, we expect at least some activity
         assert!(
             total_requests > 0,
             "Should have received proof requests across all engines"
+        );
+
+        Ok(())
+    }
+
+    /// Test waiting for a specific proof to be sent to validator.
+    #[tokio::test]
+    async fn test_wait_for_proof_sent_to_validator() -> anyhow::Result<()> {
+        let mut fixture = test_fixture_builder_base()
+            .with_log_level(LevelFilter::INFO)
+            .with_log_dir("proof-engine-sent".into())
+            .build()
+            .await?;
+        fixture.payloads_valid();
+        fixture.wait_for_genesis().await?;
+
+        // Subscribe to proof engine events
+        let mut subscription = fixture.subscribe_to_proof_engine(0)?;
+
+        // Wait for a proof to be sent to validator
+        let execution_proof = subscription
+            .wait_for_proof_sent(None, Duration::from_secs(90))
+            .await?;
+
+        tracing::info!(
+            target: "test",
+            proof_type = ?execution_proof.proof_type,
+            "Received proof sent to validator event"
+        );
+
+        // Verify the proof data
+        assert!(
+            !execution_proof.proof_data.is_empty(),
+            "Proof should have data"
+        );
+        assert!(
+            execution_proof.public_input.new_payload_request_root != types::Hash256::ZERO,
+            "Proof should have valid request root"
         );
 
         Ok(())
