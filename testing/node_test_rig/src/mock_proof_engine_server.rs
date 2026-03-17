@@ -97,6 +97,13 @@ impl<E: EthSpec> MockProofEngineServer<E> {
         };
 
         mock_server.setup_endpoints();
+
+        tracing::info!(
+            target: "mock_proof_engine",
+            url = %mock_server.server.url(),
+            "Mock proof engine server initialized"
+        );
+
         mock_server
     }
 
@@ -227,7 +234,7 @@ impl<E: EthSpec> MockProofEngineServer<E> {
                 // Trigger callback if validator client is configured
                 if let Some(validator) = validator_client_ref.read().as_ref() {
                     tracing::info!(
-                        target: "simulator",
+                        target: "mock_proof_engine",
                         ?request_root,
                         proof_types = ?proof_attributes.proof_types,
                         "Triggering proof callback"
@@ -254,7 +261,7 @@ impl<E: EthSpec> MockProofEngineServer<E> {
                 });
 
                 tracing::info!(
-                    target: "simulator",
+                    target: "mock_proof_engine",
                     proof_gen_id = hex::encode(proof_gen_id),
                     ?request_root,
                     num_proof_types = proof_attributes.proof_types.len(),
@@ -296,6 +303,16 @@ impl<E: EthSpec> MockProofEngineServer<E> {
                     }
                 };
 
+                // Parse and log the verification request
+                if let Ok(body) = serde_json::from_slice::<serde_json::Value>(_body_bytes) {
+                    tracing::info!(
+                        target: "mock_proof_engine",
+                        method = "engine_verifyExecutionProofV1",
+                        params = %body.get("params").unwrap_or(&json!(null)),
+                        "Verify proof request received — returning VALID"
+                    );
+                }
+
                 // For the verify endpoint, we just return VALID for all properly formatted requests
                 serde_json::to_vec(&json!({
                     "jsonrpc": "2.0",
@@ -333,19 +350,19 @@ impl<E: EthSpec> MockProofEngineServer<E> {
         task_executor.spawn(
             async move {
                 tracing::info!(
-                    target: "simulator",
+                    target: "mock_proof_engine",
                     delay_ms = callback_delay,
                     "Proof callback task started, sleeping"
                 );
 
                 tokio::time::sleep(Duration::from_millis(callback_delay)).await;
 
-                tracing::info!(target: "simulator", "Fetching validators for callback");
+                tracing::info!(target: "mock_proof_engine", "Fetching validators for callback");
 
                 let validators = match client.get_lighthouse_validators().await {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::error!(target: "simulator", error = ?e, "Failed to get validators");
+                        tracing::error!(target: "mock_proof_engine", error = ?e, "Failed to get validators");
                         return;
                     }
                 };
@@ -353,13 +370,13 @@ impl<E: EthSpec> MockProofEngineServer<E> {
                 let pubkey = match validators.data.first() {
                     Some(v) => v.voting_pubkey,
                     None => {
-                        tracing::error!(target: "simulator", "No validators found");
+                        tracing::error!(target: "mock_proof_engine", "No validators found");
                         return;
                     }
                 };
 
                 tracing::info!(
-                    target: "simulator",
+                    target: "mock_proof_engine",
                     ?pubkey,
                     num_proof_types = proof_types.len(),
                     "Generating and sending proofs"
@@ -370,7 +387,7 @@ impl<E: EthSpec> MockProofEngineServer<E> {
 
                 for execution_proof in execution_proofs {
                     tracing::info!(
-                        target: "simulator",
+                        target: "mock_proof_engine",
                         proof_type = ?execution_proof.proof_type,
                         "Sending proof to validator client"
                     );
@@ -382,10 +399,10 @@ impl<E: EthSpec> MockProofEngineServer<E> {
 
                     match client.post_execution_proof(&pubkey, request_body).await {
                         Ok(_) => {
-                            tracing::info!(target: "simulator", "Proof sent successfully");
+                            tracing::info!(target: "mock_proof_engine", "Proof sent successfully");
                         }
                         Err(e) => {
-                            tracing::error!(target: "simulator", error = ?e, "Failed to send proof");
+                            tracing::error!(target: "mock_proof_engine", error = ?e, "Failed to send proof");
                         }
                     }
                 }
