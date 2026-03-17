@@ -484,8 +484,8 @@ pub struct Config {
     /// Default directory for the jwt secret if not provided through cli.
     pub default_datadir: PathBuf,
     pub execution_timeout_multiplier: Option<u32>,
-    /// When true, indicates that a mock proof engine will be spawned externally
-    /// and the proof_engine_endpoint will be set before ExecutionLayer is created.
+    /// When true, indicates that a mock proof engine is being spawned and
+    /// the proof_engine_endpoint will be replaced with the mock server URL.
     #[serde(default)]
     pub mock_proof_engine: bool,
 }

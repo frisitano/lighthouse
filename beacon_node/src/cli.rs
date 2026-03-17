@@ -829,19 +829,11 @@ pub fn cli_app() -> Command {
                 .value_name("PROOF-ENGINE-ENDPOINT")
                 .help("Server endpoint for an EIP-8025 proof engine HTTP JSON-RPC connection. \
                        Does not require JWT authentication. Optional - at least one of \
-                       --execution-endpoint or --proof-engine-endpoint must be provided.")
+                       --execution-endpoint or --proof-engine-endpoint must be provided. \
+                       Use 'http://mock' to spawn an in-process mock proof engine for testing \
+                       (requires --features mock-proof-engine).")
                 .required(false)
                 .action(ArgAction::Set)
-                .display_order(0)
-        )
-        .arg(
-            Arg::new("mock-proof-engine")
-                .long("mock-proof-engine")
-                .help("Spawn an in-process mock proof engine for testing. \
-                       Automatically sets --proof-engine-endpoint to the mock server URL. \
-                       Only available when compiled with --features mock-proof-engine.")
-                .required(false)
-                .action(ArgAction::SetTrue)
                 .display_order(0)
         )
         .arg(

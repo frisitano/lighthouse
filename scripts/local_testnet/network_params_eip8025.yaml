@@ -13,7 +13,7 @@ participants:
     supernode: true
     cl_extra_params:
       - --target-peers=3
-      - --mock-proof-engine
+      - --proof-engine-endpoint=http://mock
     count: 2
   # Non-supernode participants with proof engine enabled
   - cl_type: lighthouse
@@ -23,7 +23,7 @@ participants:
     supernode: false
     cl_extra_params:
       - --target-peers=3
-      - --mock-proof-engine
+      - --proof-engine-endpoint=http://mock
     count: 2
 network_params:
   fulu_fork_epoch: 0
