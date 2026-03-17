@@ -5391,6 +5391,7 @@ dependencies = [
  "malloc_utils",
  "metrics",
  "network_utils",
+ "node_test_rig",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

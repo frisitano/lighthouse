@@ -484,6 +484,10 @@ pub struct Config {
     /// Default directory for the jwt secret if not provided through cli.
     pub default_datadir: PathBuf,
     pub execution_timeout_multiplier: Option<u32>,
+    /// When true, indicates that a mock proof engine will be spawned externally
+    /// and the proof_engine_endpoint will be set before ExecutionLayer is created.
+    #[serde(default)]
+    pub mock_proof_engine: bool,
 }
 
 /// Provides access to one execution engine and provides a neat interface for consumption by the
@@ -509,10 +513,11 @@ impl<E: EthSpec> ExecutionLayer<E> {
             jwt_version,
             default_datadir,
             execution_timeout_multiplier,
+            mock_proof_engine,
         } = config;
 
         // Validation: at least one endpoint must be provided
-        if execution_endpoint.is_none() && proof_engine_endpoint.is_none() {
+        if execution_endpoint.is_none() && proof_engine_endpoint.is_none() && !mock_proof_engine {
             return Err(Error::NoExecutionEndpoint);
         }
 

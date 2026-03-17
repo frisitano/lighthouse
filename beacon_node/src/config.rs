@@ -282,6 +282,7 @@ pub fn get_config<E: EthSpec>(
         };
 
     // Parse proof engine endpoint (optional)
+    let mock_proof_engine = cli_args.get_flag("mock-proof-engine");
     let proof_engine_endpoint: Option<SensitiveUrl> =
         if let Some(endpoints) = cli_args.get_one::<String>("proof-engine-endpoint") {
             Some(parse_only_one_value(
@@ -294,9 +295,10 @@ pub fn get_config<E: EthSpec>(
         };
 
     // Validation: at least one endpoint must be provided
-    if execution_endpoint.is_none() && proof_engine_endpoint.is_none() {
+    if execution_endpoint.is_none() && proof_engine_endpoint.is_none() && !mock_proof_engine {
         return Err(
-            "At least one of --execution-endpoint or --proof-engine-endpoint must be provided"
+            "At least one of --execution-endpoint, --proof-engine-endpoint, or \
+             --mock-proof-engine must be provided"
                 .to_string(),
         );
     }
@@ -355,8 +357,10 @@ pub fn get_config<E: EthSpec>(
     el_config.secret_file = secret_file;
     el_config.execution_endpoint = execution_endpoint;
     el_config.proof_engine_endpoint = proof_engine_endpoint;
+    el_config.mock_proof_engine = mock_proof_engine;
     // Gate execution proof gossip subscription on proof engine being configured.
-    client_config.network.enable_execution_proof = el_config.proof_engine_endpoint.is_some();
+    client_config.network.enable_execution_proof =
+        el_config.proof_engine_endpoint.is_some() || mock_proof_engine;
     el_config.suggested_fee_recipient =
         clap_utils::parse_optional(cli_args, "suggested-fee-recipient")?;
     el_config.jwt_id = clap_utils::parse_optional(cli_args, "execution-jwt-id")?;

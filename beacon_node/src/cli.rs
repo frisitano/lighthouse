@@ -835,6 +835,16 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
+            Arg::new("mock-proof-engine")
+                .long("mock-proof-engine")
+                .help("Spawn an in-process mock proof engine for testing. \
+                       Automatically sets --proof-engine-endpoint to the mock server URL. \
+                       Only available when compiled with --features mock-proof-engine.")
+                .required(false)
+                .action(ArgAction::SetTrue)
+                .display_order(0)
+        )
+        .arg(
             Arg::new("execution-jwt")
                 .long("execution-jwt")
                 .value_name("EXECUTION-JWT")
