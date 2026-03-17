@@ -19,7 +19,11 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use types::execution::eip8025::{ProofAttributes, ProofGenId, ProofStatus, SignedExecutionProof};
+use ssz_types::VariableList;
+use types::execution::eip8025::{
+    ExecutionProof, ProofAttributes, ProofGenId, ProofStatus, PublicInput, SignedExecutionProof,
+};
+use bls::SignatureBytes;
 use types::{EthSpec, Hash256};
 
 /// Static ID for JSON-RPC requests.
@@ -49,6 +53,21 @@ pub const PROOF_ENGINE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Trait defining the interface for a proof engine.
 #[async_trait::async_trait]
 pub trait ProofEngine: Send + Sync {
+    /// Whether this proof engine is running in mock mode.
+    ///
+    /// When true, BLS signature verification is skipped for received proofs
+    /// because mock-generated proofs use empty signatures.
+    fn is_mock(&self) -> bool {
+        false
+    }
+
+    /// Returns the request root of the latest proof that was successfully promoted
+    /// in the tree. Used by mock mode to update `local_execution_proof_status`
+    /// without going through the verify → gossip_methods path.
+    fn latest_promoted_request_root(&self) -> Option<Hash256> {
+        None
+    }
+
     /// Get all proofs for a given new_payload_request_root.
     fn get_proofs_by_root(&self, root: &Hash256) -> Vec<SignedExecutionProof>;
 
@@ -109,6 +128,11 @@ pub struct HttpProofEngine {
     state: RwLock<State>,
     /// Buffered proofs for request roots not yet seen.
     buffered_proofs: RwLock<HashMap<Hash256, Vec<SignedExecutionProof>>>,
+    /// When true, new_payload returns Valid immediately (for mock/testing scenarios).
+    mock_mode: bool,
+    /// The request root of the latest proof that was promoted from buffer to tree.
+    /// Updated on each successful `insert_proof` that returns `Valid`.
+    latest_promoted: RwLock<Option<Hash256>>,
 }
 
 impl HttpProofEngine {
@@ -124,7 +148,19 @@ impl HttpProofEngine {
             url,
             state: RwLock::new(State::new()),
             buffered_proofs: RwLock::new(HashMap::new()),
+            mock_mode: false,
+            latest_promoted: RwLock::new(None),
         }
+    }
+
+    /// Create a new HTTP proof engine in mock mode.
+    ///
+    /// In mock mode, `new_payload` returns `Valid` immediately without waiting for proofs,
+    /// and `forkchoice_updated` always returns `Valid`.
+    pub fn new_mock(url: SensitiveUrl, timeout: Option<Duration>) -> Self {
+        let mut engine = Self::new(url, timeout);
+        engine.mock_mode = true;
+        engine
     }
 
     /// Make a generic JSON-RPC request to the proof engine.
@@ -168,6 +204,14 @@ impl HttpProofEngine {
 
 #[async_trait::async_trait]
 impl ProofEngine for HttpProofEngine {
+    fn is_mock(&self) -> bool {
+        self.mock_mode
+    }
+
+    fn latest_promoted_request_root(&self) -> Option<Hash256> {
+        *self.latest_promoted.read()
+    }
+
     fn get_proofs_by_root(&self, root: &Hash256) -> Vec<SignedExecutionProof> {
         self.state
             .read()
@@ -198,6 +242,11 @@ impl ProofEngine for HttpProofEngine {
             return Ok(ProofStatus::Syncing);
         }
 
+        // In mock mode, accept all proofs without RPC verification.
+        if self.mock_mode {
+            return Ok(self.state.write().insert_proof(proof.clone())?);
+        }
+
         let json_proof: JsonExecutionProofV1 = proof.message.clone().into();
         let params = json!([json_proof]);
 
@@ -223,15 +272,47 @@ impl ProofEngine for HttpProofEngine {
         &self,
         request: &NewPayloadRequest<'_, E>,
     ) -> Result<PayloadStatusV1, ProofEngineError> {
-        // We buffer the request in state for future proof association and return Syncing.
+        let block_hash = request.block_hash();
+
+        // We buffer the request in state for future proof association.
+        // This must happen even in mock mode so that proofs received via gossip or
+        // the HTTP API can be stored and served to peers via ExecutionProofsByRoot.
         // TODO: Currently we don't support proof verification before payload processing to prevent DOS so its not possible that proofs are verified yet. Is this reasonable?
         let request: RequestMetadata = request.into();
+        let request_root = request.request_root;
         let buffered_proofs = self
             .buffered_proofs
             .write()
-            .remove(&request.request_root)
+            .remove(&request_root)
             .unwrap_or_default();
         self.state.write().buffer_request(request);
+
+        // In mock mode, return Valid immediately without waiting for proofs,
+        // but still process any buffered proofs so they are stored in state.
+        if self.mock_mode {
+            for proof in buffered_proofs {
+                let _ = self.verify_execution_proof(&proof).await;
+            }
+
+            // Generate and inject dummy proofs directly so they can be served
+            // to peers via ExecutionProofsByRoot and gossiped. In production the
+            // VC proof service drives proof generation, but in mock/Kurtosis mode
+            // the VC may not have a proof engine endpoint configured.
+            let dummy = Self::generate_mock_proof(request_root);
+            if let Ok(status) = self.state.write().insert_proof(dummy) {
+                if status.is_valid() {
+                    *self.latest_promoted.write() = Some(request_root);
+                }
+            }
+            tracing::debug!(target: "execution_layer", ?block_hash, ?request_root, "Mock proof engine: injected dummy proof");
+
+            tracing::debug!(target: "execution_layer", ?block_hash, "Mock proof engine: returning VALID for new_payload");
+            return Ok(PayloadStatusV1 {
+                status: PayloadStatusV1Status::Valid,
+                latest_valid_hash: Some(block_hash),
+                validation_error: None,
+            });
+        }
 
         let mut status = PayloadStatusV1Status::Syncing;
         for proof in buffered_proofs {
@@ -241,9 +322,16 @@ impl ProofEngine for HttpProofEngine {
             }
         }
 
+        // Set latest_valid_hash when status is Valid, as required by process_payload_status.
+        let latest_valid_hash = if status == PayloadStatusV1Status::Valid {
+            Some(block_hash)
+        } else {
+            None
+        };
+
         Ok(PayloadStatusV1 {
             status,
-            latest_valid_hash: None,
+            latest_valid_hash,
             validation_error: None,
         })
     }
@@ -253,6 +341,23 @@ impl ProofEngine for HttpProofEngine {
         forkchoice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdatedResponse, ProofEngineError> {
         tracing::info!(target: "execution_layer", "Received forkchoice update: head {}, safe {}, finalized {}", forkchoice_state.head_block_hash, forkchoice_state.safe_block_hash, forkchoice_state.finalized_block_hash);
+
+        // In mock mode, still update the internal state so the tree bootstraps
+        // and proofs can promote from buffer → tree (needed for Valid status).
+        // But always return Valid to avoid blocking fork choice during sync.
+        if self.mock_mode {
+            let _ = self.state.write().forkchoice_updated(forkchoice_state);
+            tracing::debug!(target: "execution_layer", "Mock proof engine: returning VALID for forkchoice_updated");
+            return Ok(ForkchoiceUpdatedResponse {
+                payload_status: PayloadStatusV1 {
+                    status: PayloadStatusV1Status::Valid,
+                    latest_valid_hash: Some(forkchoice_state.head_block_hash),
+                    validation_error: None,
+                },
+                payload_id: None,
+            });
+        }
+
         Ok(self.state.write().forkchoice_updated(forkchoice_state)?)
     }
 
@@ -261,6 +366,12 @@ impl ProofEngine for HttpProofEngine {
         new_payload_request: NewPayloadRequest<'_, E>,
         proof_attributes: ProofAttributes,
     ) -> Result<ProofGenId, ProofEngineError> {
+        // In mock mode, proofs are injected directly in new_payload() on the BN side.
+        // Return a dummy ProofGenId so the VC's ProofService doesn't error.
+        if self.mock_mode {
+            tracing::debug!(target: "execution_layer", "Mock proof engine: returning dummy ProofGenId for request_proofs");
+            return Ok([0u8; 8]);
+        }
         match new_payload_request {
             NewPayloadRequest::Bellatrix(_) => {
                 Err(ProofEngineError::ForkNotSupported("Bellatrix".to_string()))
@@ -286,6 +397,29 @@ impl ProofEngine for HttpProofEngine {
 }
 
 impl HttpProofEngine {
+    /// Generate a dummy signed execution proof for mock/testing scenarios.
+    ///
+    /// Creates a minimal valid `SignedExecutionProof` with dummy proof data,
+    /// proof_type 0, validator_index 0, and an empty signature. This is
+    /// sufficient for the proof engine state to track and serve the proof.
+    fn generate_mock_proof(request_root: Hash256) -> SignedExecutionProof {
+        let mut proof_bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        proof_bytes.extend_from_slice(&request_root.0[0..16]);
+
+        SignedExecutionProof {
+            message: ExecutionProof {
+                proof_data: VariableList::new(proof_bytes)
+                    .expect("mock proof data within max size"),
+                proof_type: 0,
+                public_input: PublicInput {
+                    new_payload_request_root: request_root,
+                },
+            },
+            validator_index: 0,
+            signature: SignatureBytes::empty(),
+        }
+    }
+
     pub async fn request_proofs_v4_fulu<E: EthSpec>(
         &self,
         new_payload_request_fulu: NewPayloadRequestFulu<'_, E>,

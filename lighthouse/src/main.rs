@@ -931,9 +931,10 @@ async fn spawn_mock_proof_engine<E: EthSpec>(
     info!(url = %mock_url, "Mock proof engine started");
 
     // Replace the http://mock sentinel with the actual mock server URL.
+    // Keep mock_proof_engine = true so HttpProofEngine is created in mock mode,
+    // returning Valid immediately for new_payload and forkchoice_updated.
     if let Some(ref mut el_config) = config.execution_layer {
         el_config.proof_engine_endpoint = Some(mock_url);
-        el_config.mock_proof_engine = false; // Clear flag now that endpoint is real
     }
 
     // Ensure execution proof gossip is enabled.

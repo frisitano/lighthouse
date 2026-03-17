@@ -7451,6 +7451,26 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     ///
     /// Entries whose `request_root → block_root` mapping is not yet in the store LRU cache
     /// are filtered out (the block may not have been imported yet).
+    /// Returns the (block_root, slot) of the latest locally promoted proof, if any.
+    ///
+    /// In mock mode, proofs are injected directly in `new_payload()` and promoted
+    /// in the tree without going through the verify → gossip_methods path.
+    /// ProofSync uses this to update `local_execution_proof_status` so peers
+    /// learn about our proof head.
+    pub fn latest_execution_proof_head(&self) -> Option<(Hash256, Slot)> {
+        let el = self.execution_layer.as_ref()?;
+        let pe = el.proof_engine()?;
+        let request_root = pe.latest_promoted_request_root()?;
+        let block_root = self.store.get_block_root_by_request_root(&request_root)?;
+        let slot = self
+            .store
+            .get_blinded_block(&block_root)
+            .ok()
+            .flatten()
+            .map(|b| b.slot())?;
+        Some((block_root, slot))
+    }
+
     pub fn missing_execution_proofs(&self) -> Vec<MissingProofInfo> {
         let Some(el) = self.execution_layer.as_ref() else {
             return vec![];
@@ -7505,45 +7525,48 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     ) -> Result<(ProofStatus, Option<(Hash256, Slot)>), Error> {
         // TODO: This function clones the proof multiple times. Optimise it.
 
-        // Clone for moving into closures
-        let chain = self.clone();
-        let signed_proof_for_bls = signed_proof.clone();
-
-        // Use spawn_blocking_handle because BLS verification is cpu-bound.
-        self.spawn_blocking_handle(
-            move || {
-                let head = chain.canonical_head.cached_head();
-                let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
-
-                let validator_index = signed_proof_for_bls.validator_index as usize;
-                let head_state = &head.snapshot.beacon_state;
-
-                let validator_pubkey = head_state
-                    .validators()
-                    .get(validator_index)
-                    .map(|v| v.pubkey)
-                    .ok_or(ExecutionProofError::InvalidValidatorIndex)?;
-
-                verify_signed_execution_proof_signature::<T::EthSpec>(
-                    &signed_proof_for_bls,
-                    &validator_pubkey,
-                    fork_name,
-                    chain.genesis_validators_root,
-                    &chain.spec,
-                )
-            },
-            "verify_execution_proof_bls",
-        )
-        .await??;
-
-        // Step 2: ProofEngine verification
-        // The proof engine must be configured if we are receiving execution proofs, so if it's not available then that's an error.
+        // Get proof engine early so we can check mock mode before BLS verification.
         let proof_engine = self
             .execution_layer
             .as_ref()
             .ok_or(ExecutionProofError::NoExecutionLayer)?
             .proof_engine()
             .ok_or(ExecutionProofError::NoExecutionLayer)?;
+
+        // Step 1: BLS signature verification (skipped in mock mode where
+        // proofs are generated without real validator signatures).
+        if !proof_engine.is_mock() {
+            let chain = self.clone();
+            let signed_proof_for_bls = signed_proof.clone();
+
+            // Use spawn_blocking_handle because BLS verification is cpu-bound.
+            self.spawn_blocking_handle(
+                move || {
+                    let head = chain.canonical_head.cached_head();
+                    let fork_name =
+                        chain.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
+
+                    let validator_index = signed_proof_for_bls.validator_index as usize;
+                    let head_state = &head.snapshot.beacon_state;
+
+                    let validator_pubkey = head_state
+                        .validators()
+                        .get(validator_index)
+                        .map(|v| v.pubkey)
+                        .ok_or(ExecutionProofError::InvalidValidatorIndex)?;
+
+                    verify_signed_execution_proof_signature::<T::EthSpec>(
+                        &signed_proof_for_bls,
+                        &validator_pubkey,
+                        fork_name,
+                        chain.genesis_validators_root,
+                        &chain.spec,
+                    )
+                },
+                "verify_execution_proof_bls",
+            )
+            .await??;
+        }
 
         // The proof engine verification is primiarly async work, waiting for the proof verifier result so we spawn it on the async executor.
         let signed_proof_for_engine = signed_proof.clone();
