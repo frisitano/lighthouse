@@ -235,4 +235,75 @@ mod tests {
             PersistedInvalidProofTracker::from_store_bytes(&bytes).expect("SSZ decode failed");
         assert_eq!(restored.banned_validators, vec![5, 10, 20]);
     }
+
+    /// Helper: create an ephemeral MemoryStore for persistence tests.
+    fn open_test_store() -> Arc<
+        store::HotColdDB<
+            types::MinimalEthSpec,
+            store::MemoryStore<types::MinimalEthSpec>,
+            store::MemoryStore<types::MinimalEthSpec>,
+        >,
+    > {
+        Arc::new(
+            store::HotColdDB::open_ephemeral(
+                store::config::StoreConfig::default(),
+                Arc::new(types::MinimalEthSpec::default_spec()),
+            )
+            .expect("Failed to open ephemeral store"),
+        )
+    }
+
+    #[test]
+    fn empty_start_fallback() {
+        // Loading from an empty store should return a default (empty) tracker.
+        let store = open_test_store();
+        let tracker = InvalidProofTracker::load_from_store(&store);
+        assert_eq!(tracker.banned_count(), 0);
+        assert!(!tracker.is_banned(1));
+    }
+
+    #[test]
+    fn persist_and_reload() {
+        let store = open_test_store();
+
+        // Ban some validators and persist.
+        let mut tracker = InvalidProofTracker::default();
+        tracker.record_invalid_proof(make_record(10));
+        tracker.record_invalid_proof(make_record(20));
+        tracker.record_invalid_proof(make_record(5));
+        tracker.persist_to_store(&store).expect("Failed to persist");
+
+        // Drop the tracker and reload from the same store — simulates restart.
+        drop(tracker);
+        let reloaded = InvalidProofTracker::load_from_store(&store);
+
+        assert_eq!(reloaded.banned_count(), 3);
+        assert!(reloaded.is_banned(5));
+        assert!(reloaded.is_banned(10));
+        assert!(reloaded.is_banned(20));
+        assert!(!reloaded.is_banned(99));
+    }
+
+    #[test]
+    fn persist_after_unban_survives_reload() {
+        let store = open_test_store();
+
+        // Ban two validators.
+        let mut tracker = InvalidProofTracker::default();
+        tracker.record_invalid_proof(make_record(10));
+        tracker.record_invalid_proof(make_record(20));
+        tracker.persist_to_store(&store).expect("Failed to persist");
+
+        // Unban one and re-persist.
+        tracker.unban(10);
+        tracker
+            .persist_to_store(&store)
+            .expect("Failed to persist after unban");
+
+        // Reload — should reflect the unban.
+        let reloaded = InvalidProofTracker::load_from_store(&store);
+        assert_eq!(reloaded.banned_count(), 1);
+        assert!(!reloaded.is_banned(10));
+        assert!(reloaded.is_banned(20));
+    }
 }
