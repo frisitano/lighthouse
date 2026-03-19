@@ -15,7 +15,6 @@ use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::service::api_types::{
     ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
 };
-use lighthouse_network::types::Subnet;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -155,45 +154,6 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         // If a range request is already in-flight, wait for it to drain.
         if self.range_request.is_some() {
             return;
-        }
-
-        // Update local proof status from the proof engine's tree state.
-        // In mock mode, proofs are injected locally in new_payload() and never
-        // go through the verify → gossip_methods path that normally updates
-        // local_execution_proof_status.
-        if let Some((block_root, slot)) = self.chain.latest_execution_proof_head() {
-            let current = cx.local_execution_proof_status();
-            if slot.as_u64() > current.slot {
-                cx.network_globals()
-                    .set_local_execution_proof_status(ExecutionProofStatus {
-                        slot: slot.as_u64(),
-                        block_root,
-                    });
-            }
-        }
-
-        // Discover proof-capable peers whose ENR wasn't available at initial
-        // connection time. Without this, peers that connect before their ENR
-        // propagates are never added to ProofSync.
-        {
-            let new_peers: Vec<PeerId> = cx
-                .network_globals()
-                .peers
-                .read()
-                .connected_peers()
-                .filter(|(peer_id, info)| {
-                    info.on_subnet_metadata(&Subnet::ExecutionProof)
-                        && !self.peer_statuses.contains_key(*peer_id)
-                        && !self.status_in_flight.contains_key(*peer_id)
-                })
-                .map(|(peer_id, _)| *peer_id)
-                .collect();
-            for peer_id in &new_peers {
-                debug!(%peer_id, "ProofSync: discovered proof-capable peer via ENR");
-            }
-            for peer_id in new_peers {
-                self.add_peer(peer_id, cx);
-            }
         }
 
         // Compute the start slot: the higher of the finalized slot and our own verified proof slot,
@@ -347,9 +307,10 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                     debug!(
                         %peer_id,
                         slot = status.slot,
-                        "ProofSync: peer block root mismatch, adding as unverified"
+                        "ProofSync: peer block root mismatch, ignoring status"
                     );
-                    false
+                    self.on_peer_status_failed(peer_id);
+                    return;
                 }
             }
         } else {
@@ -357,20 +318,6 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         };
 
         self.status_in_flight.remove(&peer_id);
-
-        // If the peer already has a verified entry, don't downgrade it to unverified.
-        // An implausible status update should not erase a previously confirmed peer.
-        if !verified
-            && let Some(existing) = self.peer_statuses.get(&peer_id)
-            && existing.verified
-        {
-            debug!(
-                %peer_id,
-                "ProofSync: keeping existing verified status, ignoring unverified update"
-            );
-            return;
-        }
-
         self.peer_statuses.insert(
             peer_id,
             CachedExecutionProofStatus {

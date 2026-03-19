@@ -583,7 +583,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
                     let mock = test_utils::get_mock_proof_engine(idx)
                         .unwrap_or_else(|| panic!("no mock registered at index {idx}"));
                     debug!(idx, "Instantiating mock proof engine from registry");
-                    Some(Arc::new(eip8025::HttpProofEngine::with_mock_proof_node(
+                    Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(
                         (*mock).clone(),
                     )))
                 } else {

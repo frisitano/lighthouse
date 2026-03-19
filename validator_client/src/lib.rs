@@ -542,7 +542,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
                 if let Some(idx) = execution_layer::test_utils::parse_mock_index(url_str.as_str()) {
                     let mock = execution_layer::test_utils::get_mock_proof_engine(idx)
                         .unwrap_or_else(|| panic!("no mock registered at index {idx}"));
-                    execution_layer::eip8025::HttpProofEngine::with_mock_proof_node((*mock).clone())
+                    execution_layer::eip8025::HttpProofEngine::with_proof_node((*mock).clone())
                 } else {
                     execution_layer::eip8025::HttpProofEngine::new(endpoint.clone(), None)
                 },

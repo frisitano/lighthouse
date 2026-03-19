@@ -281,9 +281,7 @@ pub fn get_config<E: EthSpec>(
             None
         };
 
-    // Parse proof engine endpoint (optional).
-    // If the endpoint is "http://mock", enable the in-process mock proof engine
-    // (requires the mock-proof-engine feature flag at compile time).
+    // Parse proof engine endpoint (optional)
     let proof_engine_endpoint: Option<SensitiveUrl> =
         if let Some(endpoints) = cli_args.get_one::<String>("proof-engine-endpoint") {
             Some(parse_only_one_value(
@@ -294,6 +292,7 @@ pub fn get_config<E: EthSpec>(
         } else {
             None
         };
+
     // Validation: at least one endpoint must be provided
     if execution_endpoint.is_none() && proof_engine_endpoint.is_none() {
         return Err(

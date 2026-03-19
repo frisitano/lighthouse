@@ -74,7 +74,6 @@ types = { workspace = true }
 validator_client = { workspace = true }
 validator_manager = { path = "../validator_manager" }
 
-
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 malloc_utils = { workspace = true, features = ["jemalloc"] }
 
