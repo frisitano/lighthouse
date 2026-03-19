@@ -68,9 +68,14 @@ pub fn mock_proof_engine_url(index: usize) -> String {
 
 /// Parse the index from a mock URL. Returns `None` for non-mock URLs.
 pub fn parse_mock_index(url: &str) -> Option<usize> {
-    url.strip_prefix("http://mock/")
-        .and_then(|s| s.strip_suffix('/'))
-        .and_then(|s| s.parse().ok())
+    url.strip_prefix("http://mock/").map(|s| {
+        let s = s.strip_suffix('/').unwrap_or(s);
+        if s.is_empty() {
+            0
+        } else {
+            s.parse().unwrap_or(0)
+        }
+    })
 }
 
 /// In-memory proof node client for testing.
