@@ -804,7 +804,11 @@ where
     pub fn shutdown_reasons(&self) -> Vec<ShutdownReason> {
         let mutex = self.shutdown_receiver.clone();
         let mut receiver = mutex.lock();
-        std::iter::from_fn(move || receiver.try_recv().ok())
+        std::iter::from_fn(move || match receiver.try_next() {
+            Ok(Some(s)) => Some(s),
+            Ok(None) => panic!("shutdown sender dropped"),
+            Err(_) => None,
+        })
         .collect()
     }
 
