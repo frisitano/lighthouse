@@ -18,6 +18,10 @@ env:
   RUSTFLAGS: "-D warnings -C debuginfo=0"
   CARGO_INCREMENTAL: 0
   TEST_FEATURES: portable
+  # Use Clang for C/C++ compilation. Required because leveldb-sys uses
+  # -Wthread-safety which is a Clang-only flag unsupported by GCC.
+  CC: clang
+  CXX: clang++
 
 jobs:
   check-labels:
