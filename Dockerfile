@@ -1,7 +1,5 @@
 FROM rust:1.91.0-bullseye AS builder
-RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake libclang-dev clang
-ENV CXX=clang++
-ENV CC=clang
+RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake libclang-dev
 ARG FEATURES
 ARG PROFILE=release
 ARG CARGO_USE_GIT_CLI=true
