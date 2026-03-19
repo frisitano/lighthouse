@@ -74,10 +74,7 @@ pub mod versioned_hashes;
 ///
 /// If both are `Some`, the first `Ok` is returned. If only one is `Ok`, that one wins.
 /// If both are `Err`, the first error is returned.
-fn prefer_ok<T, E>(
-    a: Option<Result<T, E>>,
-    b: Option<Result<T, E>>,
-) -> Option<Result<T, E>> {
+fn prefer_ok<T, E>(a: Option<Result<T, E>>, b: Option<Result<T, E>>) -> Option<Result<T, E>> {
     match (a, b) {
         (Some(Ok(val)), _) => Some(Ok(val)),
         (_, Some(Ok(val))) => Some(Ok(val)),

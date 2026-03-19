@@ -7540,8 +7540,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             self.spawn_blocking_handle(
                 move || {
                     let head = chain.canonical_head.cached_head();
-                    let fork_name =
-                        chain.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
+                    let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
 
                     let validator_index = signed_proof_for_bls.validator_index as usize;
                     let head_state = &head.snapshot.beacon_state;

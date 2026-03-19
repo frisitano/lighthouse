@@ -12,10 +12,10 @@ use execution_layer::MissingProofInfo;
 use fnv::FnvHashMap;
 use lighthouse_network::PeerId;
 use lighthouse_network::rpc::methods::ExecutionProofStatus;
-use lighthouse_network::types::Subnet;
 use lighthouse_network::service::api_types::{
     ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
 };
+use lighthouse_network::types::Subnet;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -360,16 +360,15 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
         // If the peer already has a verified entry, don't downgrade it to unverified.
         // An implausible status update should not erase a previously confirmed peer.
-        if !verified {
-            if let Some(existing) = self.peer_statuses.get(&peer_id) {
-                if existing.verified {
-                    debug!(
-                        %peer_id,
-                        "ProofSync: keeping existing verified status, ignoring unverified update"
-                    );
-                    return;
-                }
-            }
+        if !verified
+            && let Some(existing) = self.peer_statuses.get(&peer_id)
+            && existing.verified
+        {
+            debug!(
+                %peer_id,
+                "ProofSync: keeping existing verified status, ignoring unverified update"
+            );
+            return;
         }
 
         self.peer_statuses.insert(

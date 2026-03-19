@@ -870,4 +870,3 @@ fn run<E: EthSpec>(
         ShutdownReason::Failure(msg) => Err(msg.to_string()),
     }
 }
-

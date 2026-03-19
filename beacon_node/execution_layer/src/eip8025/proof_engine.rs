@@ -12,7 +12,7 @@ use crate::{
     PayloadStatusV1, PayloadStatusV1Status,
     eip8025::state::{RequestMetadata, State},
 };
-use bls::SignatureBytes;
+use bls::{FixedBytesExtended, SignatureBytes};
 use bytes::Bytes;
 use futures::stream::Stream;
 use parking_lot::RwLock;
@@ -204,10 +204,10 @@ impl HttpProofEngine {
             // VC proof service drives proof generation, but in mock/Kurtosis mode
             // the VC may not have a proof engine endpoint configured.
             let dummy = Self::generate_mock_proof(request_root);
-            if let Ok(status) = self.state.write().insert_proof(dummy) {
-                if status.is_valid() {
-                    *self.latest_promoted.write() = Some(request_root);
-                }
+            if let Ok(status) = self.state.write().insert_proof(dummy)
+                && status.is_valid()
+            {
+                *self.latest_promoted.write() = Some(request_root);
             }
             tracing::debug!(target: "execution_layer", ?block_hash, ?request_root, "Mock proof engine: injected dummy proof");
 
