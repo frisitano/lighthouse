@@ -1027,7 +1027,9 @@ where
             observed_attester_slashings: <_>::default(),
             observed_bls_to_execution_changes: <_>::default(),
             observed_execution_proofs: <_>::default(),
-            invalid_proof_tracker: <_>::default(),
+            invalid_proof_tracker: parking_lot::RwLock::new(
+                crate::invalid_proof_tracker::InvalidProofTracker::load_from_store(&store),
+            ),
             execution_layer: self.execution_layer.clone(),
             genesis_validators_root,
             genesis_time,

@@ -2124,15 +2124,18 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 // Layer C: record invalid proof and ban the signing validator.
                 {
                     use beacon_chain::invalid_proof_tracker::InvalidProofRecord;
-                    self.chain
-                        .invalid_proof_tracker
-                        .write()
-                        .record_invalid_proof(InvalidProofRecord {
-                            validator_index,
-                            request_root,
-                            proof_type,
-                            slot: None,
-                        });
+                    let mut tracker = self.chain.invalid_proof_tracker.write();
+                    let is_new = tracker.record_invalid_proof(InvalidProofRecord {
+                        validator_index,
+                        request_root,
+                        proof_type,
+                        slot: None,
+                    });
+                    if is_new
+                        && let Err(e) = tracker.persist_to_store(&self.chain.store)
+                    {
+                        warn!(error = ?e, "Failed to persist invalid proof tracker to disk");
+                    }
                 }
 
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
@@ -2219,15 +2222,18 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 // Layer C: record invalid proof from the validator (decision H5).
                 {
                     use beacon_chain::invalid_proof_tracker::InvalidProofRecord;
-                    self.chain
-                        .invalid_proof_tracker
-                        .write()
-                        .record_invalid_proof(InvalidProofRecord {
-                            validator_index,
-                            request_root,
-                            proof_type,
-                            slot: None,
-                        });
+                    let mut tracker = self.chain.invalid_proof_tracker.write();
+                    let is_new = tracker.record_invalid_proof(InvalidProofRecord {
+                        validator_index,
+                        request_root,
+                        proof_type,
+                        slot: None,
+                    });
+                    if is_new
+                        && let Err(e) = tracker.persist_to_store(&self.chain.store)
+                    {
+                        warn!(error = ?e, "Failed to persist invalid proof tracker to disk");
+                    }
                 }
                 self.send_network_message(NetworkMessage::ReportPeer {
                     peer_id,
