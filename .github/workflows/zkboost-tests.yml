@@ -52,6 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y git gcc g++ make cmake pkg-config llvm-dev libclang-dev clang
       - name: Get latest version of stable Rust
         uses: moonrepo/setup-rust@v1
         with:
@@ -62,3 +64,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run proof_engine_zkboost integration tests
         run: make test-zkboost
+        env:
+          CC: clang
+          CXX: clang++
