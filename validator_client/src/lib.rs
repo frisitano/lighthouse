@@ -541,7 +541,9 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
             let proof_engine_client = Arc::new(
                 if let Some(idx) = execution_layer::test_utils::parse_mock_index(url_str.as_str()) {
                     let mock = execution_layer::test_utils::get_mock_proof_engine(idx)
-                        .unwrap_or_else(|| panic!("no mock registered at index {idx}"));
+                        .unwrap_or_else(|| {
+                            execution_layer::test_utils::register_mock_proof_engine(idx, 0)
+                        });
                     execution_layer::eip8025::HttpProofEngine::with_proof_node((*mock).clone())
                 } else {
                     execution_layer::eip8025::HttpProofEngine::new(endpoint.clone(), None)
