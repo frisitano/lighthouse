@@ -2131,9 +2131,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                         proof_type,
                         slot: None,
                     });
-                    if is_new
-                        && let Err(e) = tracker.persist_to_store(&self.chain.store)
-                    {
+                    if is_new && let Err(e) = tracker.persist_to_store(&self.chain.store) {
                         warn!(error = ?e, "Failed to persist invalid proof tracker to disk");
                     }
                 }
@@ -2229,9 +2227,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                         proof_type,
                         slot: None,
                     });
-                    if is_new
-                        && let Err(e) = tracker.persist_to_store(&self.chain.store)
-                    {
+                    if is_new && let Err(e) = tracker.persist_to_store(&self.chain.store) {
                         warn!(error = ?e, "Failed to persist invalid proof tracker to disk");
                     }
                 }
