@@ -64,6 +64,3 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run proof_engine_zkboost integration tests
         run: make test-zkboost
-        env:
-          CC: clang
-          CXX: clang++
