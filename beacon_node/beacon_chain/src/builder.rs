@@ -1026,6 +1026,8 @@ where
             observed_proposer_slashings: <_>::default(),
             observed_attester_slashings: <_>::default(),
             observed_bls_to_execution_changes: <_>::default(),
+            observed_execution_proofs: <_>::default(),
+            invalid_proof_tracker: <_>::default(),
             execution_layer: self.execution_layer.clone(),
             genesis_validators_root,
             genesis_time,

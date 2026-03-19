@@ -431,6 +431,11 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     /// Maintains a record of which validators we've seen BLS to execution changes for.
     pub observed_bls_to_execution_changes:
         Mutex<ObservedOperations<SignedBlsToExecutionChange, T::EthSpec>>,
+    /// Deduplication cache for execution proofs (IGNORE-2, IGNORE-3 from EIP-8025 p2p spec).
+    pub observed_execution_proofs:
+        RwLock<crate::observed_execution_proofs::ObservedExecutionProofs>,
+    /// Persistent tracker of validators that signed invalid execution proofs.
+    pub invalid_proof_tracker: RwLock<crate::invalid_proof_tracker::InvalidProofTracker>,
     /// Interfaces with the execution client.
     pub execution_layer: Option<ExecutionLayer<T::EthSpec>>,
     /// Stores information about the canonical head and finalized/justified checkpoints of the
