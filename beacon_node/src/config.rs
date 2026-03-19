@@ -294,10 +294,6 @@ pub fn get_config<E: EthSpec>(
         } else {
             None
         };
-    let mock_proof_engine = proof_engine_endpoint
-        .as_ref()
-        .is_some_and(|url| url.expose_full().as_str().trim_end_matches('/') == "http://mock");
-
     // Validation: at least one endpoint must be provided
     if execution_endpoint.is_none() && proof_engine_endpoint.is_none() {
         return Err(
@@ -360,10 +356,8 @@ pub fn get_config<E: EthSpec>(
     el_config.secret_file = secret_file;
     el_config.execution_endpoint = execution_endpoint;
     el_config.proof_engine_endpoint = proof_engine_endpoint;
-    el_config.mock_proof_engine = mock_proof_engine;
     // Gate execution proof gossip subscription on proof engine being configured.
-    client_config.network.enable_execution_proof =
-        el_config.proof_engine_endpoint.is_some() || mock_proof_engine;
+    client_config.network.enable_execution_proof = el_config.proof_engine_endpoint.is_some();
     el_config.suggested_fee_recipient =
         clap_utils::parse_optional(cli_args, "suggested-fee-recipient")?;
     el_config.jwt_id = clap_utils::parse_optional(cli_args, "execution-jwt-id")?;

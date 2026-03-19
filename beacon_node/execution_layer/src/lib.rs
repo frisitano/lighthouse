@@ -4,7 +4,6 @@
 //! This crate only provides useful functionality for "The Merge", it does not provide any of the
 //! deposit-contract functionality that the `beacon_node/eth1` crate already provides.
 
-use crate::eip8025::proof_engine::ProofEngine;
 use crate::json_structures::{BlobAndProofV1, BlobAndProofV2};
 use crate::payload_cache::PayloadCache;
 use arc_swap::ArcSwapOption;
@@ -501,10 +500,6 @@ pub struct Config {
     /// Default directory for the jwt secret if not provided through cli.
     pub default_datadir: PathBuf,
     pub execution_timeout_multiplier: Option<u32>,
-    /// When true, indicates that a mock proof engine is being spawned and
-    /// the proof_engine_endpoint will be replaced with the mock server URL.
-    #[serde(default)]
-    pub mock_proof_engine: bool,
 }
 
 /// Provides access to one execution engine and provides a neat interface for consumption by the
@@ -530,11 +525,10 @@ impl<E: EthSpec> ExecutionLayer<E> {
             jwt_version,
             default_datadir,
             execution_timeout_multiplier,
-            mock_proof_engine,
         } = config;
 
         // Validation: at least one endpoint must be provided
-        if execution_endpoint.is_none() && proof_engine_endpoint.is_none() && !mock_proof_engine {
+        if execution_endpoint.is_none() && proof_engine_endpoint.is_none() {
             return Err(Error::NoExecutionEndpoint);
         }
 
@@ -582,15 +576,21 @@ impl<E: EthSpec> ExecutionLayer<E> {
             None
         };
 
-        // Create ProofEngine if proof_engine_endpoint is provided
+        // Create ProofEngine if proof_engine_endpoint is provided.
+        // Mock URLs of the form "http://mock/{n}/" look up a pre-registered MockProofNodeClient
+        // from the global registry instead of opening a real HTTP connection — useful for tests
+        // and simulation.
         let proof_engine: Option<Arc<eip8025::HttpProofEngine>> =
             if let Some(proof_url) = proof_engine_endpoint {
-                debug!(endpoint = %proof_url, mock = mock_proof_engine, "Loaded proof engine endpoint");
-                if mock_proof_engine {
-                    Some(Arc::new(eip8025::HttpProofEngine::new_mock(
-                        proof_url, None,
+                if let Some(idx) = test_utils::parse_mock_index(proof_url.expose_full().as_str()) {
+                    let mock = test_utils::get_mock_proof_engine(idx)
+                        .unwrap_or_else(|| panic!("no mock registered at index {idx}"));
+                    debug!(idx, "Instantiating mock proof engine from registry");
+                    Some(Arc::new(eip8025::HttpProofEngine::with_mock_proof_node(
+                        (*mock).clone(),
                     )))
                 } else {
+                    debug!(endpoint = %proof_url, "Loaded proof engine endpoint");
                     Some(Arc::new(eip8025::HttpProofEngine::new(proof_url, None)))
                 }
             } else {
@@ -633,6 +633,15 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     pub fn proof_engine(&self) -> Option<Arc<eip8025::HttpProofEngine>> {
         self.inner.proof_engine.clone()
+    }
+
+    /// Subscribe to method-invocation events emitted by a mock proof node client.
+    ///
+    /// Returns `None` if no proof engine is configured or the client is a production HTTP client.
+    pub fn subscribe_proof_node_client_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<test_utils::MockClientEvent>> {
+        self.inner.proof_engine.as_ref()?.subscribe_client_events()
     }
 
     pub fn builder(&self) -> Option<Arc<BuilderHttpClient>> {

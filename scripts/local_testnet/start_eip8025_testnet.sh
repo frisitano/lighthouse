@@ -4,8 +4,9 @@
 #
 # Requires: docker, kurtosis, yq
 #
-# This script builds Lighthouse with the mock-proof-engine feature enabled,
-# then launches a Kurtosis enclave using network_params_eip8025.yaml.
+# This script builds Lighthouse and launches a Kurtosis enclave using
+# network_params_eip8025.yaml. Mock proof engines are enabled via the
+# http://mock/0/ URL pattern (no special build feature required).
 
 set -Eeuo pipefail
 
@@ -55,9 +56,9 @@ if [ "$KEEP_ENCLAVE" = false ]; then
 fi
 
 if [ "$BUILD_IMAGE" = true ]; then
-    echo "Building Lighthouse Docker image with mock-proof-engine feature."
+    echo "Building Lighthouse Docker image."
     docker build \
-        --build-arg FEATURES=portable,spec-minimal,mock-proof-engine \
+        --build-arg FEATURES=portable,spec-minimal \
         -f "$ROOT_DIR/Dockerfile" \
         -t "$LH_IMAGE_NAME" \
         "$ROOT_DIR"

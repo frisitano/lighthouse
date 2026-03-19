@@ -835,37 +835,6 @@ fn run<E: EthSpec>(
 
             executor.clone().spawn(
                 async move {
-                    // Spawn mock proof engine if --proof-engine-endpoint http://mock is set.
-                    // The mock must live inside this async task so it stays alive for
-                    // the lifetime of the beacon node.
-                    #[cfg(feature = "mock-proof-engine")]
-                    let (_mock_proof_engine, config) =
-                        match spawn_mock_proof_engine::<E>(&context, config).await {
-                            Ok(result) => result,
-                            Err(e) => {
-                                crit!(reason = %e, "Failed to start mock proof engine");
-                                let _ = executor.shutdown_sender().try_send(
-                                    ShutdownReason::Failure(
-                                        "Failed to start mock proof engine",
-                                    ),
-                                );
-                                return;
-                            }
-                        };
-
-                    // If mock-proof-engine feature is not compiled in but http://mock was requested,
-                    // fail with a clear error message.
-                    #[cfg(not(feature = "mock-proof-engine"))]
-                    if config.execution_layer.as_ref().is_some_and(|el| el.mock_proof_engine) {
-                        crit!("--proof-engine-endpoint http://mock requires building with --features mock-proof-engine");
-                        let _ = executor.shutdown_sender().try_send(
-                            ShutdownReason::Failure(
-                                "mock proof engine feature not enabled",
-                            ),
-                        );
-                        return;
-                    }
-
                     if let Err(e) = ProductionBeaconNode::new(context.clone(), config).await {
                         crit!(reason = ?e, "Failed to start beacon node");
                         // Ignore the error since it always occurs during normal operation when
@@ -902,43 +871,3 @@ fn run<E: EthSpec>(
     }
 }
 
-/// Conditionally spawn an in-process mock proof engine and update the config to point to it.
-///
-/// Detects `http://mock` in `--proof-engine-endpoint` to trigger mock mode.
-/// Returns the `LocalProofEngine` handle (must be kept alive) and the updated config.
-/// If mock mode is not requested, returns None and the original config.
-#[cfg(feature = "mock-proof-engine")]
-async fn spawn_mock_proof_engine<E: EthSpec>(
-    context: &environment::RuntimeContext<E>,
-    mut config: beacon_node::ClientConfig,
-) -> Result<(Option<node_test_rig::LocalProofEngine<E>>, beacon_node::ClientConfig), String> {
-    let mock_enabled = config
-        .execution_layer
-        .as_ref()
-        .is_some_and(|el| el.mock_proof_engine);
-
-    if !mock_enabled {
-        return Ok((None, config));
-    }
-
-    info!("Spawning in-process mock proof engine (triggered by --proof-engine-endpoint http://mock)");
-
-    let mock_config = node_test_rig::MockProofEngineConfig::default();
-    let proof_engine =
-        node_test_rig::LocalProofEngine::<E>::new(context.clone(), mock_config).await;
-    let mock_url = proof_engine.server.url();
-
-    info!(url = %mock_url, "Mock proof engine started");
-
-    // Replace the http://mock sentinel with the actual mock server URL.
-    // Keep mock_proof_engine = true so HttpProofEngine is created in mock mode,
-    // returning Valid immediately for new_payload and forkchoice_updated.
-    if let Some(ref mut el_config) = config.execution_layer {
-        el_config.proof_engine_endpoint = Some(mock_url);
-    }
-
-    // Ensure execution proof gossip is enabled.
-    config.network.enable_execution_proof = true;
-
-    Ok((Some(proof_engine), config))
-}

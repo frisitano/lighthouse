@@ -37,8 +37,6 @@ beacon-node-redb = ["store/redb"]
 console-subscriber = ["console-subscriber/default"]
 # Force the use of the system memory allocator rather than jemalloc.
 sysmalloc = ["malloc_utils/sysmalloc"]
-# Enables --mock-proof-engine flag for in-process mock proof engine (testing only).
-mock-proof-engine = ["dep:node_test_rig"]
 
 [dependencies]
 account_manager = { "path" = "../account_manager" }
@@ -75,7 +73,7 @@ tracing-subscriber = { workspace = true }
 types = { workspace = true }
 validator_client = { workspace = true }
 validator_manager = { path = "../validator_manager" }
-node_test_rig = { workspace = true, optional = true }
+
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 malloc_utils = { workspace = true, features = ["jemalloc"] }
