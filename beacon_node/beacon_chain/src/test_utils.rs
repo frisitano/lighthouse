@@ -804,8 +804,7 @@ where
     pub fn shutdown_reasons(&self) -> Vec<ShutdownReason> {
         let mutex = self.shutdown_receiver.clone();
         let mut receiver = mutex.lock();
-        std::iter::from_fn(move || receiver.try_recv().ok())
-        .collect()
+        std::iter::from_fn(move || receiver.try_recv().ok()).collect()
     }
 
     pub fn get_current_state(&self) -> BeaconState<E> {
