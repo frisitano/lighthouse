@@ -580,10 +580,8 @@ impl<E: EthSpec> ExecutionLayer<E> {
         let proof_engine: Option<Arc<eip8025::HttpProofEngine>> =
             if let Some(proof_url) = proof_engine_endpoint {
                 if let Some(idx) = test_utils::parse_mock_index(proof_url.expose_full().as_str()) {
-                    let mock = test_utils::get_mock_proof_engine(idx).unwrap_or_else(|| {
-                        debug!(idx, "No pre-registered mock; creating MockProofNodeClient on the fly");
-                        test_utils::register_mock_proof_engine(idx, 0)
-                    });
+                    let mock = test_utils::get_mock_proof_engine(idx)
+                        .unwrap_or_else(|| panic!("no mock registered at index {idx}"));
                     debug!(idx, "Instantiating mock proof engine from registry");
                     Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(
                         (*mock).clone(),
