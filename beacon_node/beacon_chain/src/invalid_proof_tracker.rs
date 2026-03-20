@@ -10,6 +10,7 @@
 //! - Persistence: DB-backed via `HotColdDB`, survives restarts
 //! - Operator escape hatch: CLI subcommand to list/unban/clear (future work)
 
+use bls::PublicKeyBytes;
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode as DeriveDecode, Encode as DeriveEncode};
 use std::collections::HashSet;
@@ -24,26 +25,34 @@ pub const INVALID_PROOF_TRACKER_DB_KEY: Hash256 = Hash256::ZERO;
 ///
 /// The in-memory set is the source of truth during operation. Changes are persisted
 /// to `HotColdDB` so bans survive restarts.
+///
+/// Validators are identified by their public key (48-byte compressed BLS key) rather than
+/// validator index, ensuring bans are resilient to index changes across state transitions.
 #[derive(Debug, Default)]
 pub struct InvalidProofTracker {
-    /// Set of validator indices that are banned (signed at least one invalid proof).
-    banned_validators: HashSet<u64>,
+    /// Set of validator public keys that are banned (signed at least one invalid proof).
+    banned_validators: HashSet<PublicKeyBytes>,
 }
 
 /// Information recorded when a validator is banned.
 #[derive(Debug, Clone)]
 pub struct InvalidProofRecord {
-    pub validator_index: u64,
+    pub validator_pubkey: PublicKeyBytes,
     pub request_root: Hash256,
     pub proof_type: u8,
     pub slot: Option<types::Slot>,
 }
 
 /// SSZ-serializable wrapper for persisting the banned validator set.
+///
+/// Each entry is a 48-byte compressed BLS public key, serialised as a flat `Vec<Vec<u8>>`.
+/// We store the keys as raw byte vectors because `PublicKeyBytes` is a fixed-size 48-byte
+/// array that SSZ-encodes as a fixed-length container, and wrapping in `Vec<u8>` gives us
+/// a straightforward variable-length list for the outer container.
 #[derive(Debug, Clone, DeriveEncode, DeriveDecode)]
 struct PersistedInvalidProofTracker {
-    /// Sorted list of banned validator indices.
-    banned_validators: Vec<u64>,
+    /// Sorted list of banned validator public keys (each 48 bytes).
+    banned_validators: Vec<Vec<u8>>,
 }
 
 impl StoreItem for PersistedInvalidProofTracker {
@@ -67,8 +76,21 @@ impl InvalidProofTracker {
     ) -> Self {
         match store.get_item::<PersistedInvalidProofTracker>(&INVALID_PROOF_TRACKER_DB_KEY) {
             Ok(Some(persisted)) => {
-                let banned_validators: HashSet<u64> =
-                    persisted.banned_validators.into_iter().collect();
+                let banned_validators: HashSet<PublicKeyBytes> = persisted
+                    .banned_validators
+                    .into_iter()
+                    .filter_map(|bytes| {
+                        PublicKeyBytes::deserialize(&bytes)
+                            .map_err(|e| {
+                                tracing::warn!(
+                                    error = ?e,
+                                    "Skipping invalid pubkey bytes in persisted tracker"
+                                );
+                                e
+                            })
+                            .ok()
+                    })
+                    .collect();
                 let count = banned_validators.len();
                 if count > 0 {
                     tracing::info!(
@@ -98,7 +120,11 @@ impl InvalidProofTracker {
         &self,
         store: &Arc<HotColdDB<E, Hot, Cold>>,
     ) -> Result<(), StoreError> {
-        let mut sorted: Vec<u64> = self.banned_validators.iter().copied().collect();
+        let mut sorted: Vec<Vec<u8>> = self
+            .banned_validators
+            .iter()
+            .map(|pk| pk.serialize().to_vec())
+            .collect();
         sorted.sort_unstable();
         let persisted = PersistedInvalidProofTracker {
             banned_validators: sorted,
@@ -107,8 +133,8 @@ impl InvalidProofTracker {
     }
 
     /// Check whether a validator is banned.
-    pub fn is_banned(&self, validator_index: u64) -> bool {
-        self.banned_validators.contains(&validator_index)
+    pub fn is_banned(&self, validator_pubkey: &PublicKeyBytes) -> bool {
+        self.banned_validators.contains(validator_pubkey)
     }
 
     /// Record that a validator signed an invalid proof. Returns `true` if this is a new ban.
@@ -116,10 +142,10 @@ impl InvalidProofTracker {
     /// Note: The caller is responsible for calling `persist_to_store` after this method
     /// to ensure the ban survives restarts.
     pub fn record_invalid_proof(&mut self, record: InvalidProofRecord) -> bool {
-        let is_new = self.banned_validators.insert(record.validator_index);
+        let is_new = self.banned_validators.insert(record.validator_pubkey);
         if is_new {
             tracing::warn!(
-                validator_index = record.validator_index,
+                validator_pubkey = ?record.validator_pubkey,
                 ?record.request_root,
                 proof_type = record.proof_type,
                 "Banning validator for signing invalid execution proof"
@@ -131,8 +157,8 @@ impl InvalidProofTracker {
     /// Unban a specific validator (operator escape hatch).
     ///
     /// Note: The caller is responsible for calling `persist_to_store` after this method.
-    pub fn unban(&mut self, validator_index: u64) -> bool {
-        self.banned_validators.remove(&validator_index)
+    pub fn unban(&mut self, validator_pubkey: &PublicKeyBytes) -> bool {
+        self.banned_validators.remove(validator_pubkey)
     }
 
     /// Clear all bans (operator escape hatch).
@@ -147,9 +173,9 @@ impl InvalidProofTracker {
         self.banned_validators.len()
     }
 
-    /// List all banned validator indices.
-    pub fn banned_validators(&self) -> impl Iterator<Item = u64> + '_ {
-        self.banned_validators.iter().copied()
+    /// List all banned validator public keys.
+    pub fn banned_validators(&self) -> impl Iterator<Item = &PublicKeyBytes> + '_ {
+        self.banned_validators.iter()
     }
 }
 
@@ -157,9 +183,16 @@ impl InvalidProofTracker {
 mod tests {
     use super::*;
 
-    fn make_record(validator_index: u64) -> InvalidProofRecord {
+    /// Generate a deterministic pubkey from a seed index using the standard test utility.
+    fn test_pubkey(index: usize) -> PublicKeyBytes {
+        types::test_utils::generate_deterministic_keypair(index)
+            .pk
+            .compress()
+    }
+
+    fn make_record(seed: usize) -> InvalidProofRecord {
         InvalidProofRecord {
-            validator_index,
+            validator_pubkey: test_pubkey(seed),
             request_root: Hash256::repeat_byte(0x01),
             proof_type: 1,
             slot: None,
@@ -169,11 +202,12 @@ mod tests {
     #[test]
     fn ban_on_first_invalid_proof() {
         let mut tracker = InvalidProofTracker::default();
-        assert!(!tracker.is_banned(42));
+        let pk = test_pubkey(42);
+        assert!(!tracker.is_banned(&pk));
 
         let is_new = tracker.record_invalid_proof(make_record(42));
         assert!(is_new);
-        assert!(tracker.is_banned(42));
+        assert!(tracker.is_banned(&pk));
     }
 
     #[test]
@@ -189,10 +223,11 @@ mod tests {
     #[test]
     fn unban_removes_validator() {
         let mut tracker = InvalidProofTracker::default();
+        let pk = test_pubkey(42);
         tracker.record_invalid_proof(make_record(42));
 
-        assert!(tracker.unban(42));
-        assert!(!tracker.is_banned(42));
+        assert!(tracker.unban(&pk));
+        assert!(!tracker.is_banned(&pk));
     }
 
     #[test]
@@ -209,10 +244,11 @@ mod tests {
     #[test]
     fn ban_scope_is_all_types() {
         let mut tracker = InvalidProofTracker::default();
+        let pk = test_pubkey(42);
         // Ban was recorded for proof_type=1, but ban is key-scoped, not type-scoped
         tracker.record_invalid_proof(make_record(42));
         // is_banned doesn't take proof_type — all types are banned
-        assert!(tracker.is_banned(42));
+        assert!(tracker.is_banned(&pk));
     }
 
     #[test]
@@ -223,17 +259,20 @@ mod tests {
         tracker.record_invalid_proof(make_record(5));
 
         // Serialize
-        let mut sorted: Vec<u64> = tracker.banned_validators().collect();
+        let mut sorted: Vec<Vec<u8>> = tracker
+            .banned_validators()
+            .map(|pk| pk.serialize().to_vec())
+            .collect();
         sorted.sort_unstable();
         let persisted = PersistedInvalidProofTracker {
-            banned_validators: sorted,
+            banned_validators: sorted.clone(),
         };
         let bytes = persisted.as_store_bytes();
 
         // Deserialize
         let restored =
             PersistedInvalidProofTracker::from_store_bytes(&bytes).expect("SSZ decode failed");
-        assert_eq!(restored.banned_validators, vec![5, 10, 20]);
+        assert_eq!(restored.banned_validators, sorted);
     }
 
     /// Helper: create an ephemeral MemoryStore for persistence tests.
@@ -259,7 +298,7 @@ mod tests {
         let store = open_test_store();
         let tracker = InvalidProofTracker::load_from_store(&store);
         assert_eq!(tracker.banned_count(), 0);
-        assert!(!tracker.is_banned(1));
+        assert!(!tracker.is_banned(&test_pubkey(1)));
     }
 
     #[test]
@@ -278,10 +317,10 @@ mod tests {
         let reloaded = InvalidProofTracker::load_from_store(&store);
 
         assert_eq!(reloaded.banned_count(), 3);
-        assert!(reloaded.is_banned(5));
-        assert!(reloaded.is_banned(10));
-        assert!(reloaded.is_banned(20));
-        assert!(!reloaded.is_banned(99));
+        assert!(reloaded.is_banned(&test_pubkey(5)));
+        assert!(reloaded.is_banned(&test_pubkey(10)));
+        assert!(reloaded.is_banned(&test_pubkey(20)));
+        assert!(!reloaded.is_banned(&test_pubkey(99)));
     }
 
     #[test]
@@ -295,7 +334,7 @@ mod tests {
         tracker.persist_to_store(&store).expect("Failed to persist");
 
         // Unban one and re-persist.
-        tracker.unban(10);
+        tracker.unban(&test_pubkey(10));
         tracker
             .persist_to_store(&store)
             .expect("Failed to persist after unban");
@@ -303,7 +342,7 @@ mod tests {
         // Reload — should reflect the unban.
         let reloaded = InvalidProofTracker::load_from_store(&store);
         assert_eq!(reloaded.banned_count(), 1);
-        assert!(!reloaded.is_banned(10));
-        assert!(reloaded.is_banned(20));
+        assert!(!reloaded.is_banned(&test_pubkey(10)));
+        assert!(reloaded.is_banned(&test_pubkey(20)));
     }
 }

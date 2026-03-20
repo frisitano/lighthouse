@@ -1885,11 +1885,29 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        // Resolve the validator's public key from the pubkey cache.
+        // This is needed because tracking structures use pubkeys, not indices.
+        let Ok(Some(validator_pubkey)) =
+            self.chain.validator_pubkey_bytes(validator_index as usize)
+        else {
+            debug!(
+                validator_index,
+                "Ignoring execution proof: validator index not in pubkey cache"
+            );
+            self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
+            self.gossip_penalize_peer(
+                peer_id,
+                PeerAction::LowToleranceError,
+                "execution_proof_invalid_validator",
+            );
+            return;
+        };
+
         // ── Layer A: Dedup check ────────────────────────────────────────────
         {
             use beacon_chain::observed_execution_proofs::ProofObservation;
             let dedup = self.chain.observed_execution_proofs.read();
-            match dedup.check(request_root, proof_type, validator_index) {
+            match dedup.check(request_root, proof_type, &validator_pubkey) {
                 ProofObservation::AlreadyHaveValidProof => {
                     debug!(
                         ?request_root,
@@ -1924,7 +1942,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         // ── Layer C: Validator ban check ────────────────────────────────────
         {
             let tracker = self.chain.invalid_proof_tracker.read();
-            if tracker.is_banned(validator_index) {
+            if tracker.is_banned(&validator_pubkey) {
                 debug!(
                     ?request_root,
                     validator_index, "Ignoring execution proof from banned validator"
@@ -1938,7 +1956,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         self.chain
             .observed_execution_proofs
             .write()
-            .observe_verification_attempt(request_root, proof_type, validator_index);
+            .observe_verification_attempt(request_root, proof_type, validator_pubkey);
 
         // Extract the inner proof before moving execution_proof into verification.
         let execution_proof_message = execution_proof.message.clone();
@@ -2126,7 +2144,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     use beacon_chain::invalid_proof_tracker::InvalidProofRecord;
                     let mut tracker = self.chain.invalid_proof_tracker.write();
                     let is_new = tracker.record_invalid_proof(InvalidProofRecord {
-                        validator_index,
+                        validator_pubkey,
                         request_root,
                         proof_type,
                         slot: None,
@@ -2193,6 +2211,13 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        // Resolve the validator's public key from the pubkey cache.
+        let validator_pubkey = self
+            .chain
+            .validator_pubkey_bytes(validator_index as usize)
+            .ok()
+            .flatten();
+
         let verification_result = self.chain.verify_execution_proof(execution_proof).await;
 
         match verification_result {
@@ -2218,11 +2243,11 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     "RPC execution proof invalid — banning validator, penalizing peer"
                 );
                 // Layer C: record invalid proof from the validator (decision H5).
-                {
+                if let Some(validator_pubkey) = validator_pubkey {
                     use beacon_chain::invalid_proof_tracker::InvalidProofRecord;
                     let mut tracker = self.chain.invalid_proof_tracker.write();
                     let is_new = tracker.record_invalid_proof(InvalidProofRecord {
-                        validator_index,
+                        validator_pubkey,
                         request_root,
                         proof_type,
                         slot: None,
@@ -2230,6 +2255,11 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     if is_new && let Err(e) = tracker.persist_to_store(&self.chain.store) {
                         warn!(error = ?e, "Failed to persist invalid proof tracker to disk");
                     }
+                } else {
+                    warn!(
+                        validator_index,
+                        "Cannot ban validator: index not found in pubkey cache"
+                    );
                 }
                 self.send_network_message(NetworkMessage::ReportPeer {
                     peer_id,
