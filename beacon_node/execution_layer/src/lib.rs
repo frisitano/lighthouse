@@ -581,7 +581,10 @@ impl<E: EthSpec> ExecutionLayer<E> {
             if let Some(proof_url) = proof_engine_endpoint {
                 if let Some(idx) = test_utils::parse_mock_index(proof_url.expose_full().as_str()) {
                     let mock = test_utils::get_mock_proof_engine(idx).unwrap_or_else(|| {
-                        debug!(idx, "No pre-registered mock; creating MockProofNodeClient on the fly");
+                        debug!(
+                            idx,
+                            "No pre-registered mock; creating MockProofNodeClient on the fly"
+                        );
                         test_utils::register_mock_proof_engine(idx, 0)
                     });
                     debug!(idx, "Instantiating mock proof engine from registry");

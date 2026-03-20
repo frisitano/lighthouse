@@ -24,8 +24,10 @@ use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tree_hash::TreeHash;
-use types::{EthSpec, ExecutionPayloadFulu, ExecutionRequests, Hash256, MainnetEthSpec, VersionedHash};
 use types::execution::eip8025::{ProofAttributes, ProofStatus};
+use types::{
+    EthSpec, ExecutionPayloadFulu, ExecutionRequests, Hash256, MainnetEthSpec, VersionedHash,
+};
 
 /// Events emitted by [`MockProofNodeClient`] for each method invocation.
 ///
@@ -95,7 +97,10 @@ fn decode_fulu_tree_hash_root(ssz_body: &[u8]) -> Result<Hash256, ssz::DecodeErr
     let mut decoder = builder.build()?;
 
     let execution_payload: ExecutionPayloadFulu<MainnetEthSpec> = decoder.decode_next()?;
-    let versioned_hashes: VariableList<VersionedHash, <MainnetEthSpec as EthSpec>::MaxBlobCommitmentsPerBlock> = decoder.decode_next()?;
+    let versioned_hashes: VariableList<
+        VersionedHash,
+        <MainnetEthSpec as EthSpec>::MaxBlobCommitmentsPerBlock,
+    > = decoder.decode_next()?;
     let parent_beacon_block_root: Hash256 = decoder.decode_next()?;
     let execution_requests: ExecutionRequests<MainnetEthSpec> = decoder.decode_next()?;
 
@@ -112,7 +117,10 @@ fn decode_fulu_tree_hash_root(ssz_body: &[u8]) -> Result<Hash256, ssz::DecodeErr
 /// parent beacon block root. Returns `(ssz_bytes, expected_tree_hash_root)`.
 pub fn make_test_fulu_ssz(parent_root: Hash256) -> (Vec<u8>, Hash256) {
     let execution_payload = ExecutionPayloadFulu::<MainnetEthSpec>::default();
-    let versioned_hashes = VariableList::<VersionedHash, <MainnetEthSpec as EthSpec>::MaxBlobCommitmentsPerBlock>::default();
+    let versioned_hashes = VariableList::<
+        VersionedHash,
+        <MainnetEthSpec as EthSpec>::MaxBlobCommitmentsPerBlock,
+    >::default();
     let execution_requests = ExecutionRequests::<MainnetEthSpec>::default();
     let request = NewPayloadRequestFulu {
         execution_payload: &execution_payload,
