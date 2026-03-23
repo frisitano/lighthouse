@@ -1,14 +1,12 @@
 //! Persistent tracker for validators that sign invalid execution proofs.
 //!
 //! When `ProofStatus::Invalid` is returned for a BLS-valid proof, the signing validator is
-//! recorded here. Future proofs from banned validators are IGNORE'd without wasting
+//! recorded here. Future proofs from banned validators are ignored without wasting
 //! verification resources.
 //!
-//! Design decisions (from review):
+//! Design decisions:
 //! - Ban threshold: 1 (a single signed invalid proof is sufficient)
 //! - Ban scope: all proof types from the banned validator
-//! - Persistence: DB-backed via `HotColdDB`, survives restarts
-//! - Operator escape hatch: CLI subcommand to list/unban/clear (future work)
 
 use bls::PublicKeyBytes;
 use ssz::{Decode, Encode};
@@ -26,8 +24,7 @@ pub const INVALID_PROOF_TRACKER_DB_KEY: Hash256 = Hash256::ZERO;
 /// The in-memory set is the source of truth during operation. Changes are persisted
 /// to `HotColdDB` so bans survive restarts.
 ///
-/// Validators are identified by their public key (48-byte compressed BLS key) rather than
-/// validator index, ensuring bans are resilient to index changes across state transitions.
+/// Validators are identified by their public key (48-byte compressed BLS key).
 #[derive(Debug, Default)]
 pub struct InvalidProofTracker {
     /// Set of validator public keys that are banned (signed at least one invalid proof).
@@ -40,7 +37,6 @@ pub struct InvalidProofRecord {
     pub validator_pubkey: PublicKeyBytes,
     pub request_root: Hash256,
     pub proof_type: u8,
-    pub slot: Option<types::Slot>,
 }
 
 /// SSZ-serializable wrapper for persisting the banned validator set.
@@ -154,14 +150,14 @@ impl InvalidProofTracker {
         is_new
     }
 
-    /// Unban a specific validator (operator escape hatch).
+    /// Unban a specific validator.
     ///
     /// Note: The caller is responsible for calling `persist_to_store` after this method.
     pub fn unban(&mut self, validator_pubkey: &PublicKeyBytes) -> bool {
         self.banned_validators.remove(validator_pubkey)
     }
 
-    /// Clear all bans (operator escape hatch).
+    /// Clear all bans.
     ///
     /// Note: The caller is responsible for calling `persist_to_store` after this method.
     pub fn clear(&mut self) {
@@ -195,7 +191,6 @@ mod tests {
             validator_pubkey: test_pubkey(seed),
             request_root: Hash256::repeat_byte(0x01),
             proof_type: 1,
-            slot: None,
         }
     }
 

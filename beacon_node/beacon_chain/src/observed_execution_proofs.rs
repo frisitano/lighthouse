@@ -8,10 +8,7 @@
 
 use bls::PublicKeyBytes;
 use std::collections::{HashMap, HashSet};
-use types::Hash256;
-
-/// Proof type identifier (mirrors `types::ProofType`).
-type ProofType = u8;
+use types::{Hash256, ProofType};
 
 /// Gossip deduplication cache for execution proofs.
 ///

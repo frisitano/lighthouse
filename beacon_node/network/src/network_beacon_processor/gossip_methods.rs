@@ -1952,12 +1952,6 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             }
         }
 
-        // Record the verification attempt in Layer A (IGNORE-3 dedup, regardless of outcome).
-        self.chain
-            .observed_execution_proofs
-            .write()
-            .observe_verification_attempt(request_root, proof_type, validator_pubkey);
-
         // Extract the inner proof before moving execution_proof into verification.
         let execution_proof_message = execution_proof.message.clone();
 
@@ -2017,8 +2011,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     // Malformed proof (from proof engine) → REJECT + LowTolerance
                     BeaconChainError::ExecutionProofError(
                         ExecutionProofError::ProofEngineError(
-                            ProofEngineError::InvalidProofFormat(_)
-                            | ProofEngineError::InvalidPayload(_)
+                            ProofEngineError::InvalidPayload(_)
                             | ProofEngineError::InvalidHeaderFormat(_),
                         ),
                     ) => (
@@ -2142,23 +2135,21 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 // Layer C: record invalid proof and ban the signing validator.
                 {
                     use beacon_chain::invalid_proof_tracker::InvalidProofRecord;
-                    let mut tracker = self.chain.invalid_proof_tracker.write();
-                    let is_new = tracker.record_invalid_proof(InvalidProofRecord {
-                        validator_pubkey,
-                        request_root,
-                        proof_type,
-                        slot: None,
-                    });
-                    if is_new && let Err(e) = tracker.persist_to_store(&self.chain.store) {
-                        warn!(error = ?e, "Failed to persist invalid proof tracker to disk");
-                    }
+                    self.chain
+                        .invalid_proof_tracker
+                        .write()
+                        .record_invalid_proof(InvalidProofRecord {
+                            validator_pubkey,
+                            request_root,
+                            proof_type,
+                        });
                 }
 
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
                 // MidTolerance instead of Fatal — relay peers don't choose what they forward.
                 self.gossip_penalize_peer(
                     peer_id,
-                    PeerAction::MidToleranceError,
+                    PeerAction::LowToleranceError,
                     "invalid_execution_proof",
                 );
             }
@@ -2245,16 +2236,14 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 // Layer C: record invalid proof from the validator (decision H5).
                 if let Some(validator_pubkey) = validator_pubkey {
                     use beacon_chain::invalid_proof_tracker::InvalidProofRecord;
-                    let mut tracker = self.chain.invalid_proof_tracker.write();
-                    let is_new = tracker.record_invalid_proof(InvalidProofRecord {
-                        validator_pubkey,
-                        request_root,
-                        proof_type,
-                        slot: None,
-                    });
-                    if is_new && let Err(e) = tracker.persist_to_store(&self.chain.store) {
-                        warn!(error = ?e, "Failed to persist invalid proof tracker to disk");
-                    }
+                    self.chain
+                        .invalid_proof_tracker
+                        .write()
+                        .record_invalid_proof(InvalidProofRecord {
+                            validator_pubkey,
+                            request_root,
+                            proof_type,
+                        });
                 } else {
                     warn!(
                         validator_index,
@@ -2263,7 +2252,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 }
                 self.send_network_message(NetworkMessage::ReportPeer {
                     peer_id,
-                    action: PeerAction::MidToleranceError,
+                    action: PeerAction::LowToleranceError,
                     source: ReportSource::SyncService,
                     msg: "invalid_rpc_execution_proof",
                 });
