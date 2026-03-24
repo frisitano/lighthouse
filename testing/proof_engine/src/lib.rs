@@ -61,7 +61,9 @@ mod test {
         let proof_requests = tokio::time::timeout(Duration::from_secs(30), async {
             let mut proof_request_count: u64 = 0;
             loop {
-                if let Ok(MockClientEvent::ProofRequested { .. }) = event_rx.recv().await { proof_request_count += 1 }
+                if let Ok(MockClientEvent::ProofRequested { .. }) = event_rx.recv().await {
+                    proof_request_count += 1
+                }
                 if proof_request_count > 0 {
                     break;
                 }
