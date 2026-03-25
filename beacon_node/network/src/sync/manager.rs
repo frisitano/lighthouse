@@ -419,6 +419,14 @@ impl<T: BeaconChainTypes> SyncManager<T> {
     #[cfg(test)]
     pub(crate) fn start_proof_sync(&mut self) {
         self.proof_sync.start(&mut self.network);
+        // Advance through the Waiting countdown so callers immediately see Syncing state,
+        // matching pre-Waiting behaviour in unit tests.
+        while matches!(
+            self.proof_sync.state(),
+            super::proof_sync::ProofSyncState::Waiting(_)
+        ) {
+            self.proof_sync.poll(&mut self.network);
+        }
     }
 
     fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
