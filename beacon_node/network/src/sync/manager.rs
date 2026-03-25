@@ -348,7 +348,10 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             notified_unknown_roots: LRUTimeCache::new(Duration::from_secs(
                 NOTIFIED_UNKNOWN_ROOT_EXPIRY_SECONDS,
             )),
-            proof_sync: ProofSync::new(beacon_chain.clone()),
+            proof_sync: ProofSync::new(
+                beacon_chain.clone(),
+                network_globals.config.proof_sync_activation_slots,
+            ),
         }
     }
 
