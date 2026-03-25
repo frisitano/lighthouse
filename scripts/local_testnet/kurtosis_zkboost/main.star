@@ -29,7 +29,6 @@ ZKBOOST_METRICS_PATH = "/metrics"
 ZKBOOST_CONFIG_TEMPLATE = """\
 port = {port}
 el_endpoint = "http://{el_service}:{el_rpc_port}"
-chain_config_path = "/app/chain_config.json"
 
 [[zkvm]]
 kind = "mock"
@@ -38,40 +37,6 @@ mock_proof_size = {mock_proof_size}
 proof_type = "reth-zisk"
 """
 
-# Chain config matching the Kurtosis devnet genesis (chainId 3151908).
-# Providing this as a file avoids the debug_chainConfig RPC call, which
-# is not available in standard geth.
-CHAIN_CONFIG_JSON = """\
-{
-  "chainId": 3151908,
-  "homesteadBlock": 0,
-  "daoForkSupport": false,
-  "eip150Block": 0,
-  "eip155Block": 0,
-  "eip158Block": 0,
-  "byzantiumBlock": 0,
-  "constantinopleBlock": 0,
-  "petersburgBlock": 0,
-  "istanbulBlock": 0,
-  "berlinBlock": 0,
-  "londonBlock": 0,
-  "mergeNetsplitBlock": 0,
-  "shanghaiTime": 0,
-  "cancunTime": 0,
-  "pragueTime": 0,
-  "osakaTime": 0,
-  "bpo1Time": 0,
-  "terminalTotalDifficulty": 0,
-  "terminalTotalDifficultyPassed": true,
-  "depositContractAddress": "0x00000000219ab540356cbb839cbe05303d7705fa",
-  "blobSchedule": {
-    "bpo1": { "baseFeeUpdateFraction": 8346193, "max": 15, "target": 10 },
-    "cancun": { "baseFeeUpdateFraction": 3338477, "max": 6, "target": 3 },
-    "osaka": { "baseFeeUpdateFraction": 5007716, "max": 9, "target": 6 },
-    "prague": { "baseFeeUpdateFraction": 5007716, "max": 9, "target": 6 }
-  }
-}
-"""
 
 def run(plan, args):
     """Start ethereum-package then add zkboost-server sidecars."""
@@ -111,10 +76,6 @@ def run(plan, args):
             config = {
                 "config.toml": struct(
                     template = config_content,
-                    data = {},
-                ),
-                "chain_config.json": struct(
-                    template = CHAIN_CONFIG_JSON,
                     data = {},
                 ),
             },

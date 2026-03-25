@@ -52,7 +52,7 @@ additional_services:
 # ── zkboost-server sidecar configuration ─────────────────────────────────────
 # Processed by kurtosis_zkboost/main.star; NOT forwarded to ethereum-package.
 zkboost:
-  image: zkboost-server:local
+  image: ghcr.io/eth-act/zkboost/zkboost-server:0.3.0
   # Each instance connects to one EL node's JSON-RPC endpoint for witness data.
   instances:
     - name: zkboost-1
@@ -60,5 +60,5 @@ zkboost:
     - name: zkboost-2
       el_service: el-2-reth-lighthouse
   # Mock zkVM settings (real zkVM backends need external ere-server instances).
-  mock_proving_time_ms: 5000
+  mock_proving_time_ms: 300
   mock_proof_size: 1024

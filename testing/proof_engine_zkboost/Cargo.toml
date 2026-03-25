@@ -8,6 +8,8 @@ portable = ["types/portable"]
 
 [dependencies]
 anyhow = { workspace = true }
+ethereum_ssz = { workspace = true }
+tree_hash = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 execution_layer = { workspace = true }
